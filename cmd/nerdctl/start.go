@@ -19,19 +19,22 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"net/url"
-	"os"
+	"runtime"
 	"strings"
 
+	"github.com/containerd/console"
 	"github.com/containerd/containerd"
-	"github.com/containerd/containerd/cio"
 	"github.com/containerd/containerd/cmd/ctr/commands"
+	"github.com/containerd/containerd/cmd/ctr/commands/tasks"
 	"github.com/containerd/containerd/oci"
+	"github.com/containerd/nerdctl/pkg/clientutil"
 	"github.com/containerd/nerdctl/pkg/formatter"
 	"github.com/containerd/nerdctl/pkg/idutil/containerwalker"
 	"github.com/containerd/nerdctl/pkg/labels"
 	"github.com/containerd/nerdctl/pkg/netutil/nettype"
+	"github.com/containerd/nerdctl/pkg/taskutil"
 	"github.com/opencontainers/runtime-spec/specs-go"
 
 	"github.com/sirupsen/logrus"
@@ -56,7 +59,11 @@ func newStartCommand() *cobra.Command {
 }
 
 func startAction(cmd *cobra.Command, args []string) error {
-	client, ctx, cancel, err := newClient(cmd)
+	globalOptions, err := processRootCmdFlags(cmd)
+	if err != nil {
+		return err
+	}
+	client, ctx, cancel, err := clientutil.NewClient(cmd.Context(), globalOptions.Namespace, globalOptions.Address)
 	if err != nil {
 		return err
 	}
@@ -110,23 +117,25 @@ func startContainer(ctx context.Context, container containerd.Container, flagA b
 		return err
 	}
 
-	taskCIO := cio.NullIO
-
-	// Choosing the user selected option over the labels
-	if flagA {
-		taskCIO = cio.NewCreator(cio.WithStreams(os.Stdin, os.Stdout, os.Stderr))
+	if err := reconfigPIDContainer(ctx, container, client, lab); err != nil {
+		return err
 	}
-	if logURIStr := lab[labels.LogURI]; logURIStr != "" {
-		logURI, err := url.Parse(logURIStr)
-		if err != nil {
+
+	process, err := container.Spec(ctx)
+	if err != nil {
+		return err
+	}
+	flagT := process.Process.Terminal
+	var con console.Console
+	if flagA && flagT {
+		con = console.Current()
+		defer con.Reset()
+		if err := con.SetRaw(); err != nil {
 			return err
 		}
-		if flagA {
-			logrus.Debug("attaching output instead of using the log-uri")
-		} else {
-			taskCIO = cio.LogURI(logURI)
-		}
 	}
+
+	logURI := lab[labels.LogURI]
 
 	cStatus := formatter.ContainerStatus(ctx, container)
 	if cStatus == "Up" {
@@ -141,7 +150,7 @@ func startContainer(ctx context.Context, container containerd.Container, flagA b
 			logrus.WithError(err).Debug("failed to delete old task")
 		}
 	}
-	task, err := container.NewTask(ctx, taskCIO)
+	task, err := taskutil.NewTask(ctx, client, container, flagA, false, flagT, true, con, logURI)
 	if err != nil {
 		return err
 	}
@@ -160,6 +169,11 @@ func startContainer(ctx context.Context, container containerd.Container, flagA b
 
 	if !flagA {
 		return nil
+	}
+	if flagA && flagT {
+		if err := tasks.HandleConsoleResize(ctx, task, con); err != nil {
+			logrus.WithError(err).Error("console resize")
+		}
 	}
 
 	sigc := commands.ForwardAllSignals(ctx, task)
@@ -216,6 +230,41 @@ func reconfigNetContainer(ctx context.Context, c containerd.Container, client *c
 		if err != nil {
 			return err
 		}
+	}
+
+	return nil
+}
+
+func reconfigPIDContainer(ctx context.Context, c containerd.Container, client *containerd.Client, lab map[string]string) error {
+	targetContainerID, ok := lab[labels.PIDContainer]
+	if !ok {
+		return nil
+	}
+
+	if runtime.GOOS != "linux" {
+		return errors.New("--pid only supported on linux")
+	}
+
+	targetCon, err := client.LoadContainer(ctx, targetContainerID)
+	if err != nil {
+		return err
+	}
+
+	opts, err := generateSharingPIDOpts(ctx, targetCon)
+	if err != nil {
+		return err
+	}
+
+	spec, err := c.Spec(ctx)
+	if err != nil {
+		return err
+	}
+
+	err = c.Update(ctx, containerd.UpdateContainerOpts(
+		containerd.WithSpec(spec, oci.Compose(opts...)),
+	))
+	if err != nil {
+		return err
 	}
 
 	return nil

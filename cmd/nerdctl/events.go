@@ -26,6 +26,8 @@ import (
 
 	"github.com/containerd/containerd/events"
 	"github.com/containerd/containerd/log"
+	"github.com/containerd/nerdctl/pkg/clientutil"
+	"github.com/containerd/nerdctl/pkg/formatter"
 	"github.com/containerd/typeurl"
 
 	"github.com/spf13/cobra"
@@ -62,7 +64,11 @@ type Out struct {
 
 // eventsActions is from https://github.com/containerd/containerd/blob/v1.4.3/cmd/ctr/commands/events/events.go
 func eventsAction(cmd *cobra.Command, args []string) error {
-	client, ctx, cancel, err := newClient(cmd)
+	globalOptions, err := processRootCmdFlags(cmd)
+	if err != nil {
+		return err
+	}
+	client, ctx, cancel, err := clientutil.NewClient(cmd.Context(), globalOptions.Namespace, globalOptions.Address)
 	if err != nil {
 		return err
 	}
@@ -81,7 +87,7 @@ func eventsAction(cmd *cobra.Command, args []string) error {
 	case "raw", "table", "wide":
 		return errors.New("unsupported format: \"raw\", \"table\", and \"wide\"")
 	default:
-		tmpl, err = parseTemplate(format)
+		tmpl, err = formatter.ParseTemplate(format)
 		if err != nil {
 			return err
 		}

@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 
 	"github.com/containerd/nerdctl/pkg/buildkitutil"
 	"github.com/containerd/nerdctl/pkg/defaults"
@@ -37,6 +38,7 @@ func newBuilderCommand() *cobra.Command {
 		SilenceErrors: true,
 	}
 	builderCommand.AddCommand(
+		newBuildCommand(),
 		newBuilderPruneCommand(),
 		newBuilderDebugCommand(),
 	)
@@ -59,7 +61,11 @@ func newBuilderPruneCommand() *cobra.Command {
 }
 
 func builderPruneAction(cmd *cobra.Command, _ []string) error {
-	buildkitHost, err := getBuildkitHost(cmd)
+	globalOptions, err := processRootCmdFlags(cmd)
+	if err != nil {
+		return err
+	}
+	buildkitHost, err := getBuildkitHost(cmd, globalOptions.Namespace)
 	if err != nil {
 		return err
 	}
@@ -81,6 +87,7 @@ func newBuilderDebugCommand() *cobra.Command {
 	var buildDebugCommand = &cobra.Command{
 		Use:           "debug",
 		Short:         shortHelp,
+		PreRunE:       checkExperimental("`nerdctl builder debug`"),
 		RunE:          builderDebugAction,
 		SilenceUsage:  true,
 		SilenceErrors: true,
@@ -95,6 +102,10 @@ func newBuilderDebugCommand() *cobra.Command {
 }
 
 func builderDebugAction(cmd *cobra.Command, args []string) error {
+	globalOptions, err := processRootCmdFlags(cmd)
+	if err != nil {
+		return err
+	}
 	if len(args) < 1 {
 		return fmt.Errorf("context needs to be specified")
 	}
@@ -104,10 +115,9 @@ func builderDebugAction(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	buildgArgs := []string{"debug"}
-	debugLog, err := cmd.Flags().GetBool("debug")
 	if err != nil {
 		return err
-	} else if debugLog {
+	} else if globalOptions.Debug {
 		buildgArgs = append([]string{"--debug"}, buildgArgs...)
 	}
 
@@ -127,7 +137,19 @@ func builderDebugAction(cmd *cobra.Command, args []string) error {
 		return err
 	} else if len(buildArgsValue) > 0 {
 		for _, v := range buildArgsValue {
-			buildgArgs = append(buildgArgs, "--build-arg="+v)
+			arr := strings.Split(v, "=")
+			if len(arr) == 1 && len(arr[0]) > 0 {
+				// Avoid masking default build arg value from Dockerfile if environment variable is not set
+				// https://github.com/moby/moby/issues/24101
+				val, ok := os.LookupEnv(arr[0])
+				if ok {
+					buildgArgs = append(buildgArgs, fmt.Sprintf("--build-arg=%s=%s", v, val))
+				}
+			} else if len(arr) > 1 && len(arr[0]) > 0 {
+				buildgArgs = append(buildgArgs, "--build-arg="+v)
+			} else {
+				return fmt.Errorf("invalid build arg %q", v)
+			}
 		}
 	}
 

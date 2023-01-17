@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/containerd/nerdctl/pkg/clientutil"
 	"github.com/containerd/nerdctl/pkg/idutil/containerwalker"
 	"github.com/containerd/nerdctl/pkg/imgutil/commit"
 	"github.com/containerd/nerdctl/pkg/referenceutil"
@@ -33,7 +34,7 @@ func newCommitCommand() *cobra.Command {
 	var commitCommand = &cobra.Command{
 		Use:               "commit [flags] CONTAINER REPOSITORY[:TAG]",
 		Short:             "Create a new image from a container's changes",
-		Args:              cobra.ExactArgs(2),
+		Args:              IsExactArgs(2),
 		RunE:              commitAction,
 		ValidArgsFunction: commitShellComplete,
 		SilenceUsage:      true,
@@ -47,12 +48,15 @@ func newCommitCommand() *cobra.Command {
 }
 
 func commitAction(cmd *cobra.Command, args []string) error {
+	globalOptions, err := processRootCmdFlags(cmd)
+	if err != nil {
+		return err
+	}
 	opts, err := newCommitOpts(cmd, args)
 	if err != nil {
 		return err
 	}
-
-	client, ctx, cancel, err := newClient(cmd)
+	client, ctx, cancel, err := clientutil.NewClient(cmd.Context(), globalOptions.Namespace, globalOptions.Address)
 	if err != nil {
 		return err
 	}
@@ -163,7 +167,6 @@ func newCommitOpts(cmd *cobra.Command, args []string) (*commit.Opts, error) {
 func commitShellComplete(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 	if len(args) == 0 {
 		return shellCompleteContainerNames(cmd, nil)
-	} else {
-		return nil, cobra.ShellCompDirectiveNoFileComp
 	}
+	return nil, cobra.ShellCompDirectiveNoFileComp
 }

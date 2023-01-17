@@ -17,13 +17,15 @@
 package main
 
 import (
+	"github.com/containerd/nerdctl/pkg/clientutil"
+	"github.com/containerd/nerdctl/pkg/cmd/compose"
 	"github.com/containerd/nerdctl/pkg/composer"
 	"github.com/spf13/cobra"
 )
 
 func newComposePushCommand() *cobra.Command {
 	var composePushCommand = &cobra.Command{
-		Use:           "push [SERVICE...]",
+		Use:           "push [flags] [SERVICE...]",
 		Short:         "Push service images",
 		RunE:          composePushAction,
 		SilenceUsage:  true,
@@ -33,16 +35,25 @@ func newComposePushCommand() *cobra.Command {
 }
 
 func composePushAction(cmd *cobra.Command, args []string) error {
-	client, ctx, cancel, err := newClient(cmd)
+	globalOptions, err := processRootCmdFlags(cmd)
+	if err != nil {
+		return err
+	}
+
+	client, ctx, cancel, err := clientutil.NewClient(cmd.Context(), globalOptions.Namespace, globalOptions.Address)
 	if err != nil {
 		return err
 	}
 	defer cancel()
-
-	c, err := getComposer(cmd, client)
+	options, err := getComposeOptions(cmd, globalOptions.DebugFull, globalOptions.Experimental)
 	if err != nil {
 		return err
 	}
+	c, err := compose.New(client, globalOptions, options, cmd.OutOrStdout(), cmd.ErrOrStderr())
+	if err != nil {
+		return err
+	}
+
 	po := composer.PushOptions{}
 	return c.Push(ctx, po, args)
 }

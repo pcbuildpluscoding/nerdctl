@@ -21,7 +21,9 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/containerd/nerdctl/pkg/clientutil"
 	"github.com/containerd/nerdctl/pkg/containerinspector"
+	"github.com/containerd/nerdctl/pkg/formatter"
 	"github.com/containerd/nerdctl/pkg/idutil/containerwalker"
 	"github.com/containerd/nerdctl/pkg/inspecttypes/dockercompat"
 
@@ -51,7 +53,11 @@ func newContainerInspectCommand() *cobra.Command {
 }
 
 func containerInspectAction(cmd *cobra.Command, args []string) error {
-	client, ctx, cancel, err := newClient(cmd)
+	globalOptions, err := processRootCmdFlags(cmd)
+	if err != nil {
+		return err
+	}
+	client, ctx, cancel, err := clientutil.NewClient(cmd.Context(), globalOptions.Namespace, globalOptions.Address)
 	if err != nil {
 		return err
 	}
@@ -81,8 +87,11 @@ func containerInspectAction(cmd *cobra.Command, args []string) error {
 	if len(errs) > 0 {
 		return fmt.Errorf("%d errors: %v", len(errs), errs)
 	}
-
-	return formatSlice(cmd, f.entries)
+	format, err := cmd.Flags().GetString("format")
+	if err != nil {
+		return err
+	}
+	return formatter.FormatSlice(format, cmd.OutOrStdout(), f.entries)
 }
 
 type containerInspector struct {

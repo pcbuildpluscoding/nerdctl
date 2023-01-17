@@ -21,6 +21,7 @@ import (
 	"fmt"
 
 	"github.com/containerd/containerd/errdefs"
+	"github.com/containerd/nerdctl/pkg/clientutil"
 	"github.com/containerd/nerdctl/pkg/idutil/imagewalker"
 	"github.com/containerd/nerdctl/pkg/referenceutil"
 
@@ -29,9 +30,9 @@ import (
 
 func newTagCommand() *cobra.Command {
 	var tagCommand = &cobra.Command{
-		Use:               "tag SOURCE_IMAGE[:TAG] TARGET_IMAGE[:TAG]",
+		Use:               "tag [flags] SOURCE_IMAGE[:TAG] TARGET_IMAGE[:TAG]",
 		Short:             "Create a tag TARGET_IMAGE that refers to SOURCE_IMAGE",
-		Args:              cobra.ExactArgs(2),
+		Args:              IsExactArgs(2),
 		RunE:              tagAction,
 		ValidArgsFunction: tagShellComplete,
 		SilenceUsage:      true,
@@ -41,7 +42,11 @@ func newTagCommand() *cobra.Command {
 }
 
 func tagAction(cmd *cobra.Command, args []string) error {
-	client, ctx, cancel, err := newClient(cmd)
+	globalOptions, err := processRootCmdFlags(cmd)
+	if err != nil {
+		return err
+	}
+	client, ctx, cancel, err := clientutil.NewClient(cmd.Context(), globalOptions.Namespace, globalOptions.Address)
 	if err != nil {
 		return err
 	}
@@ -101,7 +106,6 @@ func tagShellComplete(cmd *cobra.Command, args []string, toComplete string) ([]s
 	if len(args) < 2 {
 		// show image names
 		return shellCompleteImageNames(cmd)
-	} else {
-		return nil, cobra.ShellCompDirectiveNoFileComp
 	}
+	return nil, cobra.ShellCompDirectiveNoFileComp
 }

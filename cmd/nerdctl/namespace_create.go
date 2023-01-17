@@ -18,6 +18,7 @@ package main
 
 import (
 	"github.com/containerd/containerd/cmd/ctr/commands"
+	"github.com/containerd/nerdctl/pkg/clientutil"
 	"github.com/spf13/cobra"
 )
 
@@ -36,12 +37,15 @@ func newNamespaceCreateCommand() *cobra.Command {
 }
 
 func namespaceCreateAction(cmd *cobra.Command, args []string) error {
+	globalOptions, err := processRootCmdFlags(cmd)
+	if err != nil {
+		return err
+	}
 	flagVSlice, err := cmd.Flags().GetStringArray("label")
 	if err != nil {
 		return err
 	}
-
-	client, ctx, cancel, err := newClient(cmd)
+	client, ctx, cancel, err := clientutil.NewClient(cmd.Context(), globalOptions.Namespace, globalOptions.Address)
 	if err != nil {
 		return err
 	}
@@ -54,7 +58,6 @@ func namespaceCreateAction(cmd *cobra.Command, args []string) error {
 func ObjectWithLabelArgs(args []string) map[string]string {
 	if len(args) >= 1 {
 		return commands.LabelArgs(args)
-	} else {
-		return nil
 	}
+	return nil
 }

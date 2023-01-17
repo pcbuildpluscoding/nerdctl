@@ -19,9 +19,12 @@ package main
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/containerd/containerd/images"
 	"github.com/containerd/containerd/platforms"
+	"github.com/containerd/nerdctl/pkg/clientutil"
+	"github.com/containerd/nerdctl/pkg/formatter"
 	"github.com/containerd/nerdctl/pkg/idutil/imagewalker"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
@@ -44,6 +47,10 @@ func newRmiCommand() *cobra.Command {
 }
 
 func rmiAction(cmd *cobra.Command, args []string) error {
+	globalOptions, err := processRootCmdFlags(cmd)
+	if err != nil {
+		return err
+	}
 	force, err := cmd.Flags().GetBool("force")
 	if err != nil {
 		return err
@@ -55,8 +62,7 @@ func rmiAction(cmd *cobra.Command, args []string) error {
 	} else if !async {
 		delOpts = append(delOpts, images.SynchronousDelete())
 	}
-
-	client, ctx, cancel, err := newClient(cmd)
+	client, ctx, cancel, err := clientutil.NewClient(cmd.Context(), globalOptions.Namespace, globalOptions.Address)
 	if err != nil {
 		return err
 	}
@@ -64,22 +70,35 @@ func rmiAction(cmd *cobra.Command, args []string) error {
 
 	cs := client.ContentStore()
 	is := client.ImageService()
-	containerStore := client.ContainerService()
-
-	containerList, err := containerStore.List(ctx)
+	containerList, err := client.Containers(ctx)
 	if err != nil {
 		return err
 	}
 	usedImages := make(map[string]struct{})
+	runningImages := make(map[string]struct{})
 	for _, container := range containerList {
-		usedImages[container.Image] = struct{}{}
+		image, err := container.Image(ctx)
+		if err != nil {
+			return err
+		}
+		cStatus := formatter.ContainerStatus(ctx, container)
+		if strings.HasPrefix(cStatus, "Up") {
+			runningImages[image.Name()] = struct{}{}
+		} else {
+			usedImages[image.Name()] = struct{}{}
+		}
 	}
 
 	walker := &imagewalker.ImageWalker{
 		Client: client,
 		OnFound: func(ctx context.Context, found imagewalker.Found) error {
-			if found.MatchCount > 1 {
+			// if found multiple images, return error unless in force-mode and
+			// there is only 1 unique image.
+			if found.MatchCount > 1 && !(force && found.UniqueImages == 1) {
 				return fmt.Errorf("multiple IDs found with provided prefix: %s", found.Req)
+			}
+			if _, ok := runningImages[found.Image.Name]; ok {
+				return fmt.Errorf("image %s is running, can't be forced removed", found.Image.Name)
 			}
 			if _, ok := usedImages[found.Image.Name]; ok && !force {
 				return fmt.Errorf("conflict: unable to remove repository reference %q (must force)", found.Req)

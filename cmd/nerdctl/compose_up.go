@@ -22,13 +22,15 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/containerd/nerdctl/pkg/clientutil"
+	"github.com/containerd/nerdctl/pkg/cmd/compose"
 	"github.com/containerd/nerdctl/pkg/composer"
 	"github.com/spf13/cobra"
 )
 
 func newComposeUpCommand() *cobra.Command {
 	var composeUpCommand = &cobra.Command{
-		Use:           "up [SERVICE...]",
+		Use:           "up [flags] [SERVICE...]",
 		Short:         "Create and start containers",
 		RunE:          composeUpAction,
 		SilenceUsage:  true,
@@ -47,6 +49,10 @@ func newComposeUpCommand() *cobra.Command {
 }
 
 func composeUpAction(cmd *cobra.Command, services []string) error {
+	globalOptions, err := processRootCmdFlags(cmd)
+	if err != nil {
+		return err
+	}
 	detach, err := cmd.Flags().GetBool("detach")
 	if err != nil {
 		return err
@@ -99,16 +105,20 @@ func composeUpAction(cmd *cobra.Command, services []string) error {
 		scale[parts[0]] = uint64(replicas)
 	}
 
-	client, ctx, cancel, err := newClient(cmd)
+	client, ctx, cancel, err := clientutil.NewClient(cmd.Context(), globalOptions.Namespace, globalOptions.Address)
 	if err != nil {
 		return err
 	}
 	defer cancel()
-
-	c, err := getComposer(cmd, client)
+	options, err := getComposeOptions(cmd, globalOptions.DebugFull, globalOptions.Experimental)
 	if err != nil {
 		return err
 	}
+	c, err := compose.New(client, globalOptions, options, cmd.OutOrStdout(), cmd.ErrOrStderr())
+	if err != nil {
+		return err
+	}
+
 	uo := composer.UpOptions{
 		Detach:        detach,
 		NoBuild:       noBuild,

@@ -18,14 +18,13 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 
 	"github.com/containerd/containerd"
-	"github.com/containerd/nerdctl/pkg/labels"
+	"github.com/containerd/nerdctl/pkg/api/types"
+	"github.com/containerd/nerdctl/pkg/clientutil"
 	"github.com/containerd/nerdctl/pkg/netutil"
-	"github.com/containerd/nerdctl/pkg/netutil/nettype"
 	"github.com/containerd/nerdctl/pkg/strutil"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
@@ -47,6 +46,10 @@ func newNetworkPruneCommand() *cobra.Command {
 }
 
 func networkPruneAction(cmd *cobra.Command, _ []string) error {
+	globalOptions, err := processRootCmdFlags(cmd)
+	if err != nil {
+		return err
+	}
 	force, err := cmd.Flags().GetBool("force")
 	if err != nil {
 		return err
@@ -64,42 +67,33 @@ func networkPruneAction(cmd *cobra.Command, _ []string) error {
 			return nil
 		}
 	}
-
-	client, ctx, cancel, err := newClient(cmd)
+	client, ctx, cancel, err := clientutil.NewClient(cmd.Context(), globalOptions.Namespace, globalOptions.Address)
 	if err != nil {
 		return err
 	}
 	defer cancel()
 
-	return networkPrune(cmd, client, ctx)
+	return networkPrune(ctx, cmd, client, globalOptions)
 }
 
-func networkPrune(cmd *cobra.Command, client *containerd.Client, ctx context.Context) error {
-	cniPath, err := cmd.Flags().GetString("cni-path")
-	if err != nil {
-		return err
-	}
-	cniNetconfpath, err := cmd.Flags().GetString("cni-netconfpath")
-	if err != nil {
-		return err
-	}
-	e, err := netutil.NewCNIEnv(cniPath, cniNetconfpath)
+func networkPrune(ctx context.Context, cmd *cobra.Command, client *containerd.Client, globalOptions types.GlobalCommandOptions) error {
+	e, err := netutil.NewCNIEnv(globalOptions.CNIPath, globalOptions.CNINetConfPath)
 	if err != nil {
 		return err
 	}
 
-	containers, err := client.Containers(ctx)
+	usedNetworks, err := netutil.UsedNetworks(ctx, client)
 	if err != nil {
 		return err
 	}
 
-	usedNetworks, err := usedNetworks(ctx, containers)
+	networkConfigs, err := e.NetworkList()
 	if err != nil {
 		return err
 	}
 
 	var removedNetworks []string // nolint: prealloc
-	for _, net := range e.Networks {
+	for _, net := range networkConfigs {
 		if strutil.InStringSlice(networkDriversToKeep, net.Name) {
 			continue
 		}
@@ -124,46 +118,4 @@ func networkPrune(cmd *cobra.Command, client *containerd.Client, ctx context.Con
 		fmt.Fprintln(cmd.OutOrStdout(), "")
 	}
 	return nil
-}
-
-func usedNetworks(ctx context.Context, containers []containerd.Container) (map[string]struct{}, error) {
-	used := make(map[string]struct{})
-	for _, c := range containers {
-		task, err := c.Task(ctx, nil)
-		if err != nil {
-			return nil, err
-		}
-		status, err := task.Status(ctx)
-		if err != nil {
-			return nil, err
-		}
-		switch status.Status {
-		case containerd.Paused, containerd.Running:
-		default:
-			continue
-		}
-		l, err := c.Labels(ctx)
-		if err != nil {
-			return nil, err
-		}
-		networkJSON, ok := l[labels.Networks]
-		if !ok {
-			continue
-		}
-		var networks []string
-		if err := json.Unmarshal([]byte(networkJSON), &networks); err != nil {
-			return nil, err
-		}
-		netType, err := nettype.Detect(networks)
-		if err != nil {
-			return nil, err
-		}
-		if netType != nettype.CNI {
-			continue
-		}
-		for _, n := range networks {
-			used[n] = struct{}{}
-		}
-	}
-	return used, nil
 }

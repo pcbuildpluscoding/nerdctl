@@ -17,11 +17,8 @@
 package main
 
 import (
-	"context"
-	"fmt"
-	"strings"
-
-	"github.com/containerd/containerd"
+	"github.com/containerd/nerdctl/pkg/api/types"
+	"github.com/containerd/nerdctl/pkg/cmd/volume"
 	"github.com/spf13/cobra"
 )
 
@@ -39,66 +36,16 @@ func newVolumePruneCommand() *cobra.Command {
 }
 
 func volumePruneAction(cmd *cobra.Command, _ []string) error {
+	globalOptions, err := processRootCmdFlags(cmd)
+	if err != nil {
+		return err
+	}
 	force, err := cmd.Flags().GetBool("force")
 	if err != nil {
 		return err
 	}
-
-	if !force {
-		var confirm string
-		msg := "This will remove all local volumes not used by at least one container."
-		msg += "\nAre you sure you want to continue? [y/N] "
-		fmt.Fprintf(cmd.OutOrStdout(), "WARNING! %s", msg)
-		fmt.Fscanf(cmd.InOrStdin(), "%s", &confirm)
-
-		if strings.ToLower(confirm) != "y" {
-			return nil
-		}
-	}
-
-	client, ctx, cancel, err := newClient(cmd)
-	if err != nil {
-		return err
-	}
-	defer cancel()
-
-	return volumePrune(cmd, client, ctx)
-}
-
-func volumePrune(cmd *cobra.Command, client *containerd.Client, ctx context.Context) error {
-	volStore, err := getVolumeStore(cmd)
-	if err != nil {
-		return err
-	}
-	volumes, err := volStore.List(false)
-	if err != nil {
-		return err
-	}
-	containers, err := client.Containers(ctx)
-	if err != nil {
-		return err
-	}
-	usedVolumes, err := usedVolumes(ctx, containers)
-	if err != nil {
-		return err
-	}
-	var removeNames []string // nolint: prealloc
-	for _, volume := range volumes {
-		if _, ok := usedVolumes[volume.Name]; ok {
-			continue
-		}
-		removeNames = append(removeNames, volume.Name)
-	}
-	removedNames, err := volStore.Remove(removeNames)
-	if err != nil {
-		return err
-	}
-	if len(removedNames) > 0 {
-		fmt.Fprintln(cmd.OutOrStdout(), "Deleted Volumes:")
-		for _, name := range removedNames {
-			fmt.Fprintln(cmd.OutOrStdout(), name)
-		}
-		fmt.Fprintln(cmd.OutOrStdout(), "")
-	}
-	return nil
+	return volume.Prune(cmd.Context(), &types.VolumePruneCommandOptions{
+		GOptions: globalOptions,
+		Force:    force,
+	}, cmd.InOrStdin(), cmd.OutOrStdout())
 }

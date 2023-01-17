@@ -27,6 +27,8 @@ import (
 	"github.com/containerd/containerd/errdefs"
 	"github.com/containerd/containerd/log"
 	"github.com/containerd/containerd/pkg/cri/util"
+	"github.com/containerd/nerdctl/pkg/api/types"
+	"github.com/containerd/nerdctl/pkg/clientutil"
 	"github.com/containerd/nerdctl/pkg/formatter"
 	"github.com/containerd/nerdctl/pkg/idutil/containerwalker"
 	"github.com/containerd/nerdctl/pkg/infoutil"
@@ -78,15 +80,23 @@ func setUpdateFlags(cmd *cobra.Command) {
 	cmd.Flags().String("cpuset-mems", "", "MEMs in which to allow execution (0-3, 0,1)")
 	cmd.Flags().Int64("pids-limit", -1, "Tune container pids limit (set -1 for unlimited)")
 	cmd.Flags().Uint16("blkio-weight", 0, "Block IO (relative weight), between 10 and 1000, or 0 to disable (default 0)")
+	cmd.Flags().String("restart", "no", `Restart policy to apply when a container exits (implemented values: "no"|"always|on-failure:n|unless-stopped")`)
+	cmd.RegisterFlagCompletionFunc("restart", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		return []string{"no", "always", "on-failure", "unless-stopped"}, cobra.ShellCompDirectiveNoFileComp
+	})
 }
 
 func updateAction(cmd *cobra.Command, args []string) error {
-	client, ctx, cancel, err := newClient(cmd)
+	globalOptions, err := processRootCmdFlags(cmd)
+	if err != nil {
+		return err
+	}
+	client, ctx, cancel, err := clientutil.NewClient(cmd.Context(), globalOptions.Namespace, globalOptions.Address)
 	if err != nil {
 		return err
 	}
 	defer cancel()
-	options, err := getUpdateOption(cmd)
+	options, err := getUpdateOption(cmd, globalOptions)
 	if err != nil {
 		return err
 	}
@@ -111,7 +121,7 @@ func updateAction(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func getUpdateOption(cmd *cobra.Command) (updateResourceOptions, error) {
+func getUpdateOption(cmd *cobra.Command, globalOptions types.GlobalCommandOptions) (updateResourceOptions, error) {
 	var options updateResourceOptions
 	cpus, err := cmd.Flags().GetFloat64("cpus")
 	if err != nil {
@@ -210,11 +220,7 @@ func getUpdateOption(cmd *cobra.Command) (updateResourceOptions, error) {
 	if err != nil {
 		return options, err
 	}
-	cgroupManager, err := cmd.Flags().GetString("cgroup-manager")
-	if err != nil {
-		return options, err
-	}
-	if blkioWeight != 0 && !infoutil.BlockIOWeight(cgroupManager) {
+	if blkioWeight != 0 && !infoutil.BlockIOWeight(globalOptions.CgroupManager) {
 		return options, fmt.Errorf("kernel support for cgroup blkio weight missing, weight discarded")
 	}
 	if blkioWeight > 0 && blkioWeight < 10 || blkioWeight > 1000 {
@@ -238,7 +244,7 @@ func getUpdateOption(cmd *cobra.Command) (updateResourceOptions, error) {
 	return options, nil
 }
 
-func updateContainer(ctx context.Context, client *containerd.Client, id string, opts updateResourceOptions, cmd *cobra.Command) (retErr error) {
+func updateContainer(ctx context.Context, client *containerd.Client, id string, opts updateResourceOptions, cmd *cobra.Command) error {
 	container, err := client.LoadContainer(ctx, id)
 	if err != nil {
 		return err
@@ -333,15 +339,21 @@ func updateContainer(ctx context.Context, client *containerd.Client, id string, 
 
 	if err := updateContainerSpec(ctx, container, spec); err != nil {
 		log.G(ctx).WithError(err).Errorf("Failed to update spec %+v for container %q", spec, id)
-	}
-	defer func() {
-		if retErr != nil {
-			// Reset spec on error.
-			if err := updateContainerSpec(ctx, container, oldSpec); err != nil {
-				log.G(ctx).WithError(err).Errorf("Failed to update spec %+v for container %q", oldSpec, id)
-			}
+		// reset spec on error.
+		if err := updateContainerSpec(ctx, container, oldSpec); err != nil {
+			log.G(ctx).WithError(err).Errorf("Failed to update spec %+v for container %q", oldSpec, id)
 		}
-	}()
+	}
+
+	restart, err := cmd.Flags().GetString("restart")
+	if err != nil {
+		return err
+	}
+	if cmd.Flags().Changed("restart") && restart != "" {
+		if err := updateContainerRestartPolicyLabel(ctx, client, container, restart); err != nil {
+			return err
+		}
+	}
 
 	// If container is not running, only update spec is enough, new resource
 	// limit will be applied when container start.

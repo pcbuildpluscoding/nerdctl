@@ -17,18 +17,19 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
+	"path/filepath"
 
 	"github.com/containerd/containerd/content"
 	"github.com/containerd/containerd/images"
 	"github.com/containerd/containerd/images/converter"
 	refdocker "github.com/containerd/containerd/reference/docker"
 	"github.com/containerd/containerd/remotes"
+	"github.com/containerd/nerdctl/pkg/clientutil"
+	"github.com/containerd/nerdctl/pkg/cosignutil"
 	"github.com/containerd/nerdctl/pkg/errutil"
 	"github.com/containerd/nerdctl/pkg/imgutil/dockerconfigresolver"
 	"github.com/containerd/nerdctl/pkg/imgutil/push"
@@ -38,9 +39,7 @@ import (
 	"github.com/containerd/stargz-snapshotter/estargz"
 	"github.com/containerd/stargz-snapshotter/estargz/zstdchunked"
 	estargzconvert "github.com/containerd/stargz-snapshotter/nativeconverter/estargz"
-	httpapi "github.com/ipfs/go-ipfs-http-client"
-	"github.com/multiformats/go-multiaddr"
-	digest "github.com/opencontainers/go-digest"
+	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
@@ -52,9 +51,9 @@ const (
 
 func newPushCommand() *cobra.Command {
 	var pushCommand = &cobra.Command{
-		Use:               "push NAME[:TAG]",
+		Use:               "push [flags] NAME[:TAG]",
 		Short:             "Push an image or a repository to a registry. Optionally specify \"ipfs://\" or \"ipns://\" scheme to push image to IPFS.",
-		Args:              cobra.ExactArgs(1),
+		Args:              IsExactArgs(1),
 		RunE:              pushAction,
 		ValidArgsFunction: pushShellComplete,
 		SilenceUsage:      true,
@@ -85,9 +84,12 @@ func newPushCommand() *cobra.Command {
 }
 
 func pushAction(cmd *cobra.Command, args []string) error {
+	globalOptions, err := processRootCmdFlags(cmd)
+	if err != nil {
+		return err
+	}
 	rawRef := args[0]
-
-	client, ctx, cancel, err := newClient(cmd)
+	client, ctx, cancel, err := clientutil.NewClient(cmd.Context(), globalOptions.Namespace, globalOptions.Address)
 	if err != nil {
 		return err
 	}
@@ -120,32 +122,29 @@ func pushAction(cmd *cobra.Command, args []string) error {
 			return err
 		}
 
-		var ipfsClient *httpapi.HttpApi
+		var ipfsPath *string
 		if ipfsAddressStr != "" {
-			a, err := multiaddr.NewMultiaddr(ipfsAddressStr)
+			dir, err := os.MkdirTemp("", "apidirtmp")
 			if err != nil {
 				return err
 			}
-			ipfsClient, err = httpapi.NewApi(a)
-			if err != nil {
+			defer os.RemoveAll(dir)
+			if err := os.WriteFile(filepath.Join(dir, "api"), []byte(ipfsAddressStr), 0600); err != nil {
 				return err
 			}
-		} else {
-			ipfsClient, err = httpapi.NewLocalApi()
-			if err != nil {
-				return err
-			}
+			ipfsPath = &dir
 		}
 
 		var layerConvert converter.ConvertFunc
 		if convertEStargz {
 			layerConvert = eStargzConvertFunc()
 		}
-		c, err := ipfs.Push(ctx, client, ipfsClient, ref, layerConvert, allPlatforms, platform, ensureImage)
+		c, err := ipfs.Push(ctx, client, ref, layerConvert, allPlatforms, platform, ensureImage, ipfsPath)
 		if err != nil {
+			logrus.WithError(err).Warnf("ipfs push failed")
 			return err
 		}
-		fmt.Fprintln(cmd.OutOrStdout(), c.String())
+		fmt.Fprintln(cmd.OutOrStdout(), c)
 		return err
 	}
 
@@ -155,11 +154,6 @@ func pushAction(cmd *cobra.Command, args []string) error {
 	}
 	ref := named.String()
 	refDomain := refdocker.Domain(named)
-
-	insecure, err := cmd.Flags().GetBool("insecure-registry")
-	if err != nil {
-		return err
-	}
 
 	platMC, err := platformutil.NewMatchComparer(allPlatforms, platform)
 	if err != nil {
@@ -200,15 +194,11 @@ func pushAction(cmd *cobra.Command, args []string) error {
 	}
 
 	var dOpts []dockerconfigresolver.Opt
-	if insecure {
+	if globalOptions.InsecureRegistry {
 		logrus.Warnf("skipping verifying HTTPS certs for %q", refDomain)
 		dOpts = append(dOpts, dockerconfigresolver.WithSkipVerifyCerts(true))
 	}
-	hostsDirs, err := cmd.Flags().GetStringSlice("hosts-dir")
-	if err != nil {
-		return err
-	}
-	dOpts = append(dOpts, dockerconfigresolver.WithHostsDirs(hostsDirs))
+	dOpts = append(dOpts, dockerconfigresolver.WithHostsDirs(globalOptions.HostsDir))
 	resolver, err := dockerconfigresolver.New(ctx, refDomain, dOpts...)
 	if err != nil {
 		return err
@@ -218,7 +208,7 @@ func pushAction(cmd *cobra.Command, args []string) error {
 		if !errutil.IsErrHTTPResponseToHTTPSClient(err) && !errutil.IsErrConnectionRefused(err) {
 			return err
 		}
-		if insecure {
+		if globalOptions.InsecureRegistry {
 			logrus.WithError(err).Warnf("server %q does not seem to support HTTPS, falling back to plain HTTP", refDomain)
 			dOpts = append(dOpts, dockerconfigresolver.WithPlainHTTP(true))
 			resolver, err = dockerconfigresolver.New(ctx, refDomain, dOpts...)
@@ -226,11 +216,10 @@ func pushAction(cmd *cobra.Command, args []string) error {
 				return err
 			}
 			return pushFunc(resolver)
-		} else {
-			logrus.WithError(err).Errorf("server %q does not seem to support HTTPS", refDomain)
-			logrus.Info("Hint: you may want to try --insecure-registry to allow plain HTTP (if you are in a trusted network)")
-			return err
 		}
+		logrus.WithError(err).Errorf("server %q does not seem to support HTTPS", refDomain)
+		logrus.Info("Hint: you may want to try --insecure-registry to allow plain HTTP (if you are in a trusted network)")
+		return err
 	}
 
 	signer, err := cmd.Flags().GetString("sign")
@@ -240,12 +229,17 @@ func pushAction(cmd *cobra.Command, args []string) error {
 	}
 	switch signer {
 	case "cosign":
+
+		if !globalOptions.Experimental {
+			return fmt.Errorf("cosign only work with enable experimental feature")
+		}
+
 		keyRef, err := cmd.Flags().GetString("cosign-key")
 		if err != nil {
 			return err
 		}
 
-		err = signCosign(rawRef, keyRef)
+		err = cosignutil.SignCosign(rawRef, keyRef)
 		if err != nil {
 			return err
 		}
@@ -303,48 +297,4 @@ func isReusableESGZ(ctx context.Context, cs content.Store, desc ocispec.Descript
 		return false
 	}
 	return true
-}
-
-func signCosign(rawRef string, keyRef string) error {
-	cosignExecutable, err := exec.LookPath("cosign")
-	if err != nil {
-		logrus.WithError(err).Error("cosign executable not found in path $PATH")
-		logrus.Info("you might consider installing cosign from: https://docs.sigstore.dev/cosign/installation")
-		return err
-	}
-
-	cosignCmd := exec.Command(cosignExecutable, []string{"sign"}...)
-	cosignCmd.Env = os.Environ()
-
-	if keyRef != "" {
-		cosignCmd.Args = append(cosignCmd.Args, "--key", keyRef)
-	} else {
-		cosignCmd.Env = append(cosignCmd.Env, "COSIGN_EXPERIMENTAL=true")
-	}
-
-	cosignCmd.Args = append(cosignCmd.Args, rawRef)
-
-	logrus.Debugf("running %s %v", cosignExecutable, cosignCmd.Args)
-
-	stdout, _ := cosignCmd.StdoutPipe()
-	stderr, _ := cosignCmd.StderrPipe()
-	if err := cosignCmd.Start(); err != nil {
-		return err
-	}
-
-	scanner := bufio.NewScanner(stdout)
-	for scanner.Scan() {
-		logrus.Info("cosign: " + scanner.Text())
-	}
-
-	errScanner := bufio.NewScanner(stderr)
-	for errScanner.Scan() {
-		logrus.Info("cosign: " + errScanner.Text())
-	}
-
-	if err := cosignCmd.Wait(); err != nil {
-		return err
-	}
-
-	return nil
 }

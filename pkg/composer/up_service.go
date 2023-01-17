@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 
@@ -38,7 +39,7 @@ func (c *Composer) upServices(ctx context.Context, parsedServices []*servicepars
 
 	// TODO: parallelize loop for ensuring images (make sure not to mess up tty)
 	for _, ps := range parsedServices {
-		if err := c.ensureServiceImage(ctx, ps, !uo.NoBuild, uo.ForceBuild, BuildOptions{IPFS: uo.IPFS}, uo.QuietPull); err != nil {
+		if err := c.ensureServiceImage(ctx, ps, !uo.NoBuild, uo.ForceBuild, BuildOptions{}, uo.QuietPull); err != nil {
 			return err
 		}
 	}
@@ -47,10 +48,10 @@ func (c *Composer) upServices(ctx context.Context, parsedServices []*servicepars
 		containers   = make(map[string]serviceparser.Container) // key: container ID
 		services     = []string{}
 		containersMu sync.Mutex
-		runEG        errgroup.Group
 	)
 	for _, ps := range parsedServices {
 		ps := ps
+		var runEG errgroup.Group
 		services = append(services, ps.Unparsed.Name)
 		for _, container := range ps.Containers {
 			container := container
@@ -65,9 +66,9 @@ func (c *Composer) upServices(ctx context.Context, parsedServices []*servicepars
 				return nil
 			})
 		}
-	}
-	if err := runEG.Wait(); err != nil {
-		return err
+		if err := runEG.Wait(); err != nil {
+			return err
+		}
 	}
 
 	if uo.Detach {
@@ -85,20 +86,7 @@ func (c *Composer) upServices(ctx context.Context, parsedServices []*servicepars
 	}
 
 	logrus.Infof("Stopping containers (forcibly)") // TODO: support gracefully stopping
-	var rmWG sync.WaitGroup
-	for id, container := range containers {
-		id := id
-		container := container
-		rmWG.Add(1)
-		go func() {
-			defer rmWG.Done()
-			logrus.Infof("Stopping container %s", container.Name)
-			if err := c.runNerdctlCmd(ctx, "rm", "-f", id); err != nil {
-				logrus.Warn(err)
-			}
-		}()
-	}
-	rmWG.Wait()
+	c.stopContainersFromParsedServices(ctx, containers)
 	return nil
 }
 
@@ -109,17 +97,16 @@ func (c *Composer) ensureServiceImage(ctx context.Context, ps *serviceparser.Ser
 		}
 		if ok, err := c.ImageExists(ctx, ps.Image); err != nil {
 			return err
-		} else if ok {
-			logrus.Debugf("Image %s already exists, not building", ps.Image)
-		} else {
+		} else if !ok {
 			return c.buildServiceImage(ctx, ps.Image, ps.Build, ps.Unparsed.Platform, bo)
 		}
+		// even when c.ImageExists returns true, we need to call c.EnsureImage
+		// because ps.PullMode can be "always". So no return here.
+		logrus.Debugf("Image %s already exists, not building", ps.Image)
 	}
 
-	// even when c.ImageExists returns true, we need to call c.EnsureImage
-	// because ps.PullMode can be "always".
 	logrus.Infof("Ensuring image %s", ps.Image)
-	if err := c.EnsureImage(ctx, ps.Image, ps.PullMode, ps.Unparsed.Platform, quiet); err != nil {
+	if err := c.EnsureImage(ctx, ps.Image, ps.PullMode, ps.Unparsed.Platform, ps, quiet); err != nil {
 		return err
 	}
 	return nil
@@ -146,8 +133,20 @@ func (c *Composer) upServiceContainer(ctx context.Context, service *serviceparse
 		logrus.Infof("Creating container %s", container.Name)
 	}
 
+	tempDir, err := os.MkdirTemp(os.TempDir(), "compose-")
+	if err != nil {
+		return "", fmt.Errorf("error while creating/re-creating container %s: %w", container.Name, err)
+	}
+	defer os.RemoveAll(tempDir)
+	cidFilename := filepath.Join(tempDir, "cid")
+
+	if container.Detached && !service.Unparsed.StdinOpen && !service.Unparsed.Tty {
+		container.RunArgs = append([]string{"-d"}, container.RunArgs...)
+	}
+
 	//add metadata labels to container https://github.com/compose-spec/compose-spec/blob/master/spec.md#labels
 	container.RunArgs = append([]string{
+		"--cidfile=" + cidFilename,
 		fmt.Sprintf("-l=%s=%s", labels.ComposeProject, c.project.Name),
 		fmt.Sprintf("-l=%s=%s", labels.ComposeService, service.Unparsed.Name),
 	}, container.RunArgs...)
@@ -156,10 +155,29 @@ func (c *Composer) upServiceContainer(ctx context.Context, service *serviceparse
 	if c.DebugPrintFull {
 		logrus.Debugf("Running %v", cmd.Args)
 	}
-	cmd.Stderr = os.Stderr
-	out, err := cmd.Output()
+
+	// FIXME
+	if service.Unparsed.StdinOpen != service.Unparsed.Tty {
+		return "", fmt.Errorf("currently StdinOpen(-i) and Tty(-t) should be same")
+	}
+
+	if service.Unparsed.StdinOpen {
+		cmd.Stdin = os.Stdin
+	}
+
+	if !container.Detached {
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+	}
+
+	err = cmd.Run()
 	if err != nil {
 		return "", fmt.Errorf("error while creating container %s: %w", container.Name, err)
 	}
-	return strings.TrimSpace(string(out)), nil
+
+	cid, err := os.ReadFile(cidFilename)
+	if err != nil {
+		return "", fmt.Errorf("error while creating container %s: %w", container.Name, err)
+	}
+	return strings.TrimSpace(string(cid)), nil
 }

@@ -70,8 +70,7 @@ func (c *Composer) Up(ctx context.Context, uo UpOptions, services []string) erro
 	var parsedServices []*serviceparser.Service
 	// use WithServices to sort the services in dependency order
 	if err := c.project.WithServices(services, func(svc types.ServiceConfig) error {
-		replicas, ok := uo.Scale[svc.Name]
-		if ok {
+		if replicas, ok := uo.Scale[svc.Name]; ok {
 			if svc.Deploy == nil {
 				svc.Deploy = &types.DeployConfig{}
 			}
@@ -95,7 +94,7 @@ func (c *Composer) Up(ctx context.Context, uo UpOptions, services []string) erro
 	}
 	if len(orphans) > 0 {
 		if uo.RemoveOrphans {
-			if err := c.downContainers(ctx, orphans, true); err != nil {
+			if err := c.removeContainers(ctx, orphans, RemoveOptions{Stop: true, Volumes: true}); err != nil {
 				return fmt.Errorf("error removing orphaned containers: %s", err)
 			}
 		} else {

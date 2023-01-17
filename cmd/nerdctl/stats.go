@@ -29,7 +29,10 @@ import (
 
 	"github.com/containerd/containerd"
 	eventstypes "github.com/containerd/containerd/api/events"
+	"github.com/containerd/containerd/errdefs"
 	"github.com/containerd/containerd/events"
+	"github.com/containerd/nerdctl/pkg/api/types"
+	"github.com/containerd/nerdctl/pkg/clientutil"
 	"github.com/containerd/nerdctl/pkg/containerinspector"
 	"github.com/containerd/nerdctl/pkg/eventutil"
 	"github.com/containerd/nerdctl/pkg/formatter"
@@ -104,6 +107,10 @@ func statsAction(cmd *cobra.Command, args []string) error {
 
 	// NOTE: rootless container does not rely on cgroupv1.
 	// more details about possible ways to resolve this concern: #223
+	globalOptions, err := processRootCmdFlags(cmd)
+	if err != nil {
+		return err
+	}
 	if rootlessutil.IsRootless() && infoutil.CgroupsVersion() == "1" {
 		return errors.New("stats requires cgroup v2 for rootless containers, see https://rootlesscontaine.rs/getting-started/common/cgroup2/")
 	}
@@ -133,7 +140,7 @@ func statsAction(cmd *cobra.Command, args []string) error {
 	case "raw":
 		return errors.New("unsupported format: \"raw\"")
 	default:
-		tmpl, err = parseTemplate(format)
+		tmpl, err = formatter.ParseTemplate(format)
 		if err != nil {
 			return err
 		}
@@ -147,8 +154,7 @@ func statsAction(cmd *cobra.Command, args []string) error {
 	// waitFirst is a WaitGroup to wait first stat data's reach for each container
 	waitFirst := &sync.WaitGroup{}
 	cStats := stats{}
-
-	client, ctx, cancel, err := newClient(cmd)
+	client, ctx, cancel, err := clientutil.NewClient(cmd.Context(), globalOptions.Namespace, globalOptions.Address)
 	if err != nil {
 		return err
 	}
@@ -191,7 +197,7 @@ func statsAction(cmd *cobra.Command, args []string) error {
 			s := statsutil.NewStats(c.ID())
 			if cStats.add(s) {
 				waitFirst.Add(1)
-				go collect(cmd, s, waitFirst, c.ID(), !noStream)
+				go collect(cmd, globalOptions, s, waitFirst, c.ID(), !noStream)
 			}
 		}
 	}
@@ -222,7 +228,7 @@ func statsAction(cmd *cobra.Command, args []string) error {
 			s := statsutil.NewStats(datacc.ID)
 			if cStats.add(s) {
 				waitFirst.Add(1)
-				go collect(cmd, s, waitFirst, datacc.ID, !noStream)
+				go collect(cmd, globalOptions, s, waitFirst, datacc.ID, !noStream)
 			}
 		})
 
@@ -265,7 +271,7 @@ func statsAction(cmd *cobra.Command, args []string) error {
 				s := statsutil.NewStats(found.Container.ID())
 				if cStats.add(s) {
 					waitFirst.Add(1)
-					go collect(cmd, s, waitFirst, found.Container.ID(), !noStream)
+					go collect(cmd, globalOptions, s, waitFirst, found.Container.ID(), !noStream)
 				}
 				return nil
 			},
@@ -318,6 +324,9 @@ func statsAction(cmd *cobra.Command, args []string) error {
 		}
 
 		for _, c := range ccstats {
+			if c.ID == "" {
+				continue
+			}
 			rc := statsutil.RenderEntry(&c, noTrunc)
 			if !firstTick {
 				if tmpl != nil {
@@ -344,7 +353,7 @@ func statsAction(cmd *cobra.Command, args []string) error {
 				}
 			}
 		}
-		if f, ok := w.(Flusher); ok {
+		if f, ok := w.(formatter.Flusher); ok {
 			f.Flush()
 		}
 
@@ -370,23 +379,21 @@ func statsAction(cmd *cobra.Command, args []string) error {
 	return err
 }
 
-func collect(cmd *cobra.Command, s *statsutil.Stats, waitFirst *sync.WaitGroup, id string, noStream bool) {
-
+func collect(cmd *cobra.Command, globalOptions types.GlobalCommandOptions, s *statsutil.Stats, waitFirst *sync.WaitGroup, id string, noStream bool) {
 	logrus.Debugf("collecting stats for %s", s.Container)
 	var (
-		getFirst bool
+		getFirst = true
 		u        = make(chan error, 1)
 	)
 
 	defer func() {
 		// if error happens and we get nothing of stats, release wait group whatever
-		if !getFirst {
-			getFirst = true
+		if getFirst {
+			getFirst = false
 			waitFirst.Done()
 		}
 	}()
-
-	client, ctx, cancel, err := newClient(cmd)
+	client, ctx, cancel, err := clientutil.NewClient(cmd.Context(), globalOptions.Namespace, globalOptions.Address)
 	if err != nil {
 		s.SetError(err)
 		return
@@ -459,18 +466,20 @@ func collect(cmd *cobra.Command, s *statsutil.Stats, waitFirst *sync.WaitGroup, 
 			// the specified duration.
 			s.SetErrorAndReset(errors.New("timeout waiting for stats"))
 			// if this is the first stat you get, release WaitGroup
-			if !getFirst {
-				getFirst = true
+			if getFirst {
+				getFirst = false
 				waitFirst.Done()
 			}
 		case err := <-u:
 			if err != nil {
-				s.SetError(err)
-				continue
+				if !errdefs.IsNotFound(err) {
+					s.SetError(err)
+					continue
+				}
 			}
 			// if this is the first stat you get, release WaitGroup
-			if !getFirst {
-				getFirst = true
+			if getFirst {
+				getFirst = false
 				waitFirst.Done()
 			}
 		}

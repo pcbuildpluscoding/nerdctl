@@ -29,12 +29,16 @@ import (
 )
 
 func TestIPFSComposeUp(t *testing.T) {
-	requiresIPFS(t)
+	testutil.RequireExecutable(t, "ipfs")
 	testutil.DockerIncompatible(t)
+	base := testutil.NewBase(t)
+	ipfsaddr, done := runIPFSDaemonContainer(t, base)
+	defer done()
 	tests := []struct {
 		name           string
 		snapshotter    string
 		pushOptions    []string
+		composeOptions []string
 		requiresStargz bool
 	}{
 		{
@@ -46,6 +50,12 @@ func TestIPFSComposeUp(t *testing.T) {
 			snapshotter:    "stargz",
 			pushOptions:    []string{"--estargz"},
 			requiresStargz: true,
+		},
+		{
+			name:           "ipfs-address",
+			snapshotter:    "overlayfs",
+			pushOptions:    []string{fmt.Sprintf("--ipfs-address=%s", ipfsaddr)},
+			composeOptions: []string{fmt.Sprintf("--ipfs-address=%s", ipfsaddr)},
 		},
 	}
 	for _, tt := range tests {
@@ -95,13 +105,13 @@ services:
 volumes:
   wordpress:
   db:
-`, ipfsImgs[0], ipfsImgs[1]))
+`, ipfsImgs[0], ipfsImgs[1]), tt.composeOptions...)
 		})
 	}
 }
 
 func TestIPFSComposeUpBuild(t *testing.T) {
-	requiresIPFS(t)
+	testutil.RequireExecutable(t, "ipfs")
 	testutil.DockerIncompatible(t)
 	testutil.RequiresBuild(t)
 	base := testutil.NewBase(t)
@@ -127,8 +137,9 @@ COPY index.html /usr/share/nginx/html/index.html
 	comp.WriteFile("Dockerfile", dockerfile)
 	comp.WriteFile("index.html", indexHTML)
 
-	base.ComposeCmd("-f", comp.YAMLFullPath(), "up", "-d", "--build", "--ipfs").AssertOK()
-	defer base.Cmd("ipfs", "registry", "down").AssertOK()
+	done := ipfsRegistryUp(t, base)
+	defer done()
+	base.ComposeCmd("-f", comp.YAMLFullPath(), "up", "-d", "--build").AssertOK()
 	defer base.ComposeCmd("-f", comp.YAMLFullPath(), "down", "-v").Run()
 
 	resp, err := nettestutil.HTTPGet("http://127.0.0.1:8080", 50, false)

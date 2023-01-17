@@ -23,6 +23,9 @@ import (
 
 	"github.com/containerd/containerd"
 	"github.com/containerd/containerd/platforms"
+	"github.com/containerd/nerdctl/pkg/api/types"
+	"github.com/containerd/nerdctl/pkg/clientutil"
+	"github.com/containerd/nerdctl/pkg/formatter"
 	"github.com/containerd/nerdctl/pkg/idutil/imagewalker"
 	"github.com/containerd/nerdctl/pkg/imageinspector"
 	"github.com/containerd/nerdctl/pkg/inspecttypes/dockercompat"
@@ -32,7 +35,7 @@ import (
 
 func newImageInspectCommand() *cobra.Command {
 	var imageInspectCommand = &cobra.Command{
-		Use:               "inspect [OPTIONS] IMAGE [IMAGE...]",
+		Use:               "inspect [flags] IMAGE [IMAGE...]",
 		Args:              cobra.MinimumNArgs(1),
 		Short:             "Display detailed information on one or more images.",
 		Long:              "Hint: set `--mode=native` for showing the full output",
@@ -59,14 +62,19 @@ func newImageInspectCommand() *cobra.Command {
 }
 
 func imageInspectAction(cmd *cobra.Command, args []string) error {
+	globalOptions, err := processRootCmdFlags(cmd)
+	if err != nil {
+		return err
+	}
 	platform, err := cmd.Flags().GetString("platform")
 	if err != nil {
 		return err
 	}
-	return imageInspectActionWithPlatform(cmd, args, platform)
+	return imageInspectActionWithPlatform(cmd, args, platform, globalOptions)
 }
 
-func imageInspectActionWithPlatform(cmd *cobra.Command, args []string, platform string) error {
+func imageInspectActionWithPlatform(cmd *cobra.Command, args []string, platform string, globalOptions types.GlobalCommandOptions) error {
+
 	var clientOpts []containerd.ClientOpt
 	if platform != "" {
 		platformParsed, err := platforms.Parse(platform)
@@ -76,7 +84,7 @@ func imageInspectActionWithPlatform(cmd *cobra.Command, args []string, platform 
 		platformM := platforms.Only(platformParsed)
 		clientOpts = append(clientOpts, containerd.WithDefaultPlatform(platformM))
 	}
-	client, ctx, cancel, err := newClient(cmd, clientOpts...)
+	client, ctx, cancel, err := clientutil.NewClient(cmd.Context(), globalOptions.Namespace, globalOptions.Address, clientOpts...)
 	if err != nil {
 		return err
 	}
@@ -128,8 +136,11 @@ func imageInspectActionWithPlatform(cmd *cobra.Command, args []string, platform 
 	if len(errs) > 0 {
 		return fmt.Errorf("%d errors: %v", len(errs), errs)
 	}
-
-	return formatSlice(cmd, f.entries)
+	format, err := cmd.Flags().GetString("format")
+	if err != nil {
+		return err
+	}
+	return formatter.FormatSlice(format, cmd.OutOrStdout(), f.entries)
 }
 
 type imageInspector struct {

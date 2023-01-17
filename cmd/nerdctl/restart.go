@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/containerd/nerdctl/pkg/clientutil"
 	"github.com/containerd/nerdctl/pkg/idutil/containerwalker"
 	"github.com/spf13/cobra"
 )
@@ -35,23 +36,26 @@ func newRestartCommand() *cobra.Command {
 		SilenceUsage:      true,
 		SilenceErrors:     true,
 	}
-	restartCommand.Flags().StringP("time", "t", "10", "Seconds to wait for stop before killing it")
+	restartCommand.Flags().UintP("time", "t", 10, "Seconds to wait for stop before killing it")
 	return restartCommand
 }
 
 func restartAction(cmd *cobra.Command, args []string) error {
 	// Time to wait after sending a SIGTERM and before sending a SIGKILL.
+	globalOptions, err := processRootCmdFlags(cmd)
+	if err != nil {
+		return err
+	}
 	var timeout *time.Duration
 	if cmd.Flags().Changed("time") {
-		timeValue, err := cmd.Flags().GetInt("time")
+		timeValue, err := cmd.Flags().GetUint("time")
 		if err != nil {
 			return err
 		}
 		t := time.Duration(timeValue) * time.Second
 		timeout = &t
 	}
-
-	client, ctx, cancel, err := newClient(cmd)
+	client, ctx, cancel, err := clientutil.NewClient(cmd.Context(), globalOptions.Namespace, globalOptions.Address)
 	if err != nil {
 		return err
 	}

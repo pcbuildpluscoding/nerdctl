@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/containerd/nerdctl/pkg/clientutil"
 	"github.com/spf13/cobra"
 
 	"github.com/containerd/containerd"
@@ -49,6 +50,10 @@ func newStopCommand() *cobra.Command {
 
 func stopAction(cmd *cobra.Command, args []string) error {
 	// Time to wait after sending a SIGTERM and before sending a SIGKILL.
+	globalOptions, err := processRootCmdFlags(cmd)
+	if err != nil {
+		return err
+	}
 	var timeout *time.Duration
 	if cmd.Flags().Changed("time") {
 		timeValue, err := cmd.Flags().GetInt("time")
@@ -58,8 +63,7 @@ func stopAction(cmd *cobra.Command, args []string) error {
 		t := time.Duration(timeValue) * time.Second
 		timeout = &t
 	}
-
-	client, ctx, cancel, err := newClient(cmd)
+	client, ctx, cancel, err := clientutil.NewClient(cmd.Context(), globalOptions.Namespace, globalOptions.Address)
 	if err != nil {
 		return err
 	}

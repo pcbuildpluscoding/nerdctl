@@ -37,6 +37,7 @@ import (
 	"text/tabwriter"
 
 	"github.com/containerd/containerd"
+	"github.com/containerd/nerdctl/pkg/clientutil"
 	"github.com/containerd/nerdctl/pkg/idutil/containerwalker"
 	"github.com/containerd/nerdctl/pkg/infoutil"
 	"github.com/containerd/nerdctl/pkg/rootlessutil"
@@ -77,19 +78,18 @@ func newTopCommand() *cobra.Command {
 func topAction(cmd *cobra.Command, args []string) error {
 	// NOTE: rootless container does not rely on cgroupv1.
 	// more details about possible ways to resolve this concern: #223
+	globalOptions, err := processRootCmdFlags(cmd)
+	if err != nil {
+		return err
+	}
 	if rootlessutil.IsRootless() && infoutil.CgroupsVersion() == "1" {
 		return fmt.Errorf("top requires cgroup v2 for rootless containers, see https://rootlesscontaine.rs/getting-started/common/cgroup2/")
 	}
 
-	cgroupManager, err := cmd.Flags().GetString("cgroup-manager")
-	if err != nil {
-		return err
-	}
-	if cgroupManager == "none" {
+	if globalOptions.CgroupManager == "none" {
 		return errors.New("cgroup manager must not be \"none\"")
 	}
-
-	client, ctx, cancel, err := newClient(cmd)
+	client, ctx, cancel, err := clientutil.NewClient(cmd.Context(), globalOptions.Namespace, globalOptions.Address)
 	if err != nil {
 		return err
 	}

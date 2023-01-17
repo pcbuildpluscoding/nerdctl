@@ -17,21 +17,21 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
-	"strings"
+	"path/filepath"
 
 	"github.com/containerd/containerd"
+	"github.com/containerd/nerdctl/pkg/api/types"
+	"github.com/containerd/nerdctl/pkg/clientutil"
+	"github.com/containerd/nerdctl/pkg/cosignutil"
 	"github.com/containerd/nerdctl/pkg/imgutil"
 	"github.com/containerd/nerdctl/pkg/ipfs"
 	"github.com/containerd/nerdctl/pkg/platformutil"
 	"github.com/containerd/nerdctl/pkg/referenceutil"
 	"github.com/containerd/nerdctl/pkg/strutil"
-	httpapi "github.com/ipfs/go-ipfs-http-client"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/sirupsen/logrus"
 
@@ -40,9 +40,9 @@ import (
 
 func newPullCommand() *cobra.Command {
 	var pullCommand = &cobra.Command{
-		Use:           "pull",
+		Use:           "pull [flags] NAME[:TAG]",
 		Short:         "Pull an image from a registry. Optionally specify \"ipfs://\" or \"ipns://\" scheme to pull image from IPFS.",
-		Args:          cobra.ExactArgs(1),
+		Args:          IsExactArgs(1),
 		RunE:          pullAction,
 		SilenceUsage:  true,
 		SilenceErrors: true,
@@ -69,12 +69,18 @@ func newPullCommand() *cobra.Command {
 
 	pullCommand.Flags().BoolP("quiet", "q", false, "Suppress verbose output")
 
+	pullCommand.Flags().String("ipfs-address", "", "multiaddr of IPFS API (default uses $IPFS_PATH env variable if defined or local directory ~/.ipfs)")
+
 	return pullCommand
 }
 
 func pullAction(cmd *cobra.Command, args []string) error {
+	globalOptions, err := processRootCmdFlags(cmd)
+	if err != nil {
+		return err
+	}
 	rawRef := args[0]
-	client, ctx, cancel, err := newClient(cmd)
+	client, ctx, cancel, err := clientutil.NewClient(cmd.Context(), globalOptions.Namespace, globalOptions.Address)
 	if err != nil {
 		return err
 	}
@@ -105,7 +111,7 @@ func pullAction(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	_, err = ensureImage(cmd, ctx, client, rawRef, ocispecPlatforms, "always", unpack, quiet)
+	_, err = ensureImage(ctx, cmd, client, globalOptions, rawRef, ocispecPlatforms, "always", unpack, quiet)
 	if err != nil {
 		return err
 	}
@@ -113,22 +119,10 @@ func pullAction(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func ensureImage(cmd *cobra.Command, ctx context.Context, client *containerd.Client, rawRef string, ocispecPlatforms []v1.Platform,
-	pull string, unpack *bool, quiet bool) (*imgutil.EnsuredImage, error) {
+func ensureImage(ctx context.Context, cmd *cobra.Command, client *containerd.Client, globalOptions types.GlobalCommandOptions, rawRef string, ocispecPlatforms []v1.Platform, pull string, unpack *bool, quiet bool) (*imgutil.EnsuredImage, error) {
 
 	var ensured *imgutil.EnsuredImage
-	snapshotter, err := cmd.Flags().GetString("snapshotter")
-	if err != nil {
-		return nil, err
-	}
-	insecureRegistry, err := cmd.Flags().GetBool("insecure-registry")
-	if err != nil {
-		return nil, err
-	}
-	hostsDirs, err := cmd.Flags().GetStringSlice("hosts-dir")
-	if err != nil {
-		return nil, err
-	}
+
 	verifier, err := cmd.Flags().GetString("verify")
 	if err != nil {
 		return nil, err
@@ -139,12 +133,26 @@ func ensureImage(cmd *cobra.Command, ctx context.Context, client *containerd.Cli
 			return nil, errors.New("--verify flag is not supported on IPFS as of now")
 		}
 
-		ipfsClient, err := httpapi.NewLocalApi()
+		ipfsAddressStr, err := cmd.Flags().GetString("ipfs-address")
 		if err != nil {
 			return nil, err
 		}
-		ensured, err = ipfs.EnsureImage(ctx, client, ipfsClient, cmd.OutOrStdout(), cmd.ErrOrStderr(), snapshotter, scheme, ref,
-			pull, ocispecPlatforms, unpack, quiet)
+
+		var ipfsPath *string
+		if ipfsAddressStr != "" {
+			dir, err := os.MkdirTemp("", "apidirtmp")
+			if err != nil {
+				return nil, err
+			}
+			defer os.RemoveAll(dir)
+			if err := os.WriteFile(filepath.Join(dir, "api"), []byte(ipfsAddressStr), 0600); err != nil {
+				return nil, err
+			}
+			ipfsPath = &dir
+		}
+
+		ensured, err = ipfs.EnsureImage(ctx, client, cmd.OutOrStdout(), cmd.ErrOrStderr(), globalOptions.Snapshotter, scheme, ref,
+			pull, ocispecPlatforms, unpack, quiet, ipfsPath)
 		if err != nil {
 			return nil, err
 		}
@@ -154,12 +162,18 @@ func ensureImage(cmd *cobra.Command, ctx context.Context, client *containerd.Cli
 	ref := rawRef
 	switch verifier {
 	case "cosign":
+		experimental := globalOptions.Experimental
+
+		if !experimental {
+			return nil, fmt.Errorf("cosign only work with enable experimental feature")
+		}
+
 		keyRef, err := cmd.Flags().GetString("cosign-key")
 		if err != nil {
 			return nil, err
 		}
 
-		ref, err = verifyCosign(ctx, rawRef, keyRef, hostsDirs)
+		ref, err = cosignutil.VerifyCosign(ctx, rawRef, keyRef, globalOptions.HostsDir)
 		if err != nil {
 			return nil, err
 		}
@@ -169,66 +183,10 @@ func ensureImage(cmd *cobra.Command, ctx context.Context, client *containerd.Cli
 		return nil, fmt.Errorf("no verifier found: %s", verifier)
 	}
 
-	ensured, err = imgutil.EnsureImage(ctx, client, cmd.OutOrStdout(), cmd.ErrOrStderr(), snapshotter, ref,
-		pull, insecureRegistry, hostsDirs, ocispecPlatforms, unpack, quiet)
+	ensured, err = imgutil.EnsureImage(ctx, client, cmd.OutOrStdout(), cmd.ErrOrStderr(), globalOptions.Snapshotter, ref,
+		pull, globalOptions.InsecureRegistry, globalOptions.HostsDir, ocispecPlatforms, unpack, quiet)
 	if err != nil {
 		return nil, err
 	}
 	return ensured, err
-}
-
-func verifyCosign(ctx context.Context, rawRef string, keyRef string, hostsDirs []string) (string, error) {
-	digest, err := imgutil.ResolveDigest(ctx, rawRef, false, hostsDirs)
-	if err != nil {
-		logrus.WithError(err).Errorf("unable to resolve digest for an image %s: %v", rawRef, err)
-		return rawRef, err
-	}
-	ref := rawRef
-	if !strings.Contains(ref, "@") {
-		ref += "@" + digest
-	}
-
-	logrus.Debugf("verifying image: %s", ref)
-
-	cosignExecutable, err := exec.LookPath("cosign")
-	if err != nil {
-		logrus.WithError(err).Error("cosign executable not found in path $PATH")
-		logrus.Info("you might consider installing cosign from: https://docs.sigstore.dev/cosign/installation")
-		return ref, err
-	}
-
-	cosignCmd := exec.Command(cosignExecutable, []string{"verify"}...)
-	cosignCmd.Env = os.Environ()
-
-	if keyRef != "" {
-		cosignCmd.Args = append(cosignCmd.Args, "--key", keyRef)
-	} else {
-		cosignCmd.Env = append(cosignCmd.Env, "COSIGN_EXPERIMENTAL=true")
-	}
-
-	cosignCmd.Args = append(cosignCmd.Args, ref)
-
-	logrus.Debugf("running %s %v", cosignExecutable, cosignCmd.Args)
-
-	stdout, _ := cosignCmd.StdoutPipe()
-	stderr, _ := cosignCmd.StderrPipe()
-	if err := cosignCmd.Start(); err != nil {
-		return ref, err
-	}
-
-	scanner := bufio.NewScanner(stdout)
-	for scanner.Scan() {
-		logrus.Info("cosign: " + scanner.Text())
-	}
-
-	errScanner := bufio.NewScanner(stderr)
-	for errScanner.Scan() {
-		logrus.Info("cosign: " + errScanner.Text())
-	}
-
-	if err := cosignCmd.Wait(); err != nil {
-		return ref, err
-	}
-
-	return ref, nil
 }

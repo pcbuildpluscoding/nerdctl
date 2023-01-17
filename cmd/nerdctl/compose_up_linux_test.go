@@ -71,14 +71,14 @@ volumes:
 `, testutil.WordpressImage, testutil.MariaDBImage))
 }
 
-func testComposeUp(t *testing.T, base *testutil.Base, dockerComposeYAML string) {
+func testComposeUp(t *testing.T, base *testutil.Base, dockerComposeYAML string, opts ...string) {
 	comp := testutil.NewComposeDir(t, dockerComposeYAML)
 	defer comp.CleanUp()
 
 	projectName := comp.ProjectName()
 	t.Logf("projectName=%q", projectName)
 
-	base.ComposeCmd("-f", comp.YAMLFullPath(), "up", "-d").AssertOK()
+	base.ComposeCmd(append(append([]string{"-f", comp.YAMLFullPath()}, opts...), "up", "-d")...).AssertOK()
 	defer base.ComposeCmd("-f", comp.YAMLFullPath(), "down", "-v").Run()
 	base.Cmd("volume", "inspect", fmt.Sprintf("%s_db", projectName)).AssertOK()
 	base.Cmd("network", "inspect", fmt.Sprintf("%s_default", projectName)).AssertOK()
@@ -92,8 +92,8 @@ func testComposeUp(t *testing.T, base *testutil.Base, dockerComposeYAML string) 
 		if err != nil {
 			return err
 		}
-		t.Logf("respBody=%q", respBody)
 		if !strings.Contains(string(respBody), testutil.WordpressIndexHTMLSnippet) {
+			t.Logf("respBody=%q", respBody)
 			return fmt.Errorf("respBody does not contain %q", testutil.WordpressIndexHTMLSnippet)
 		}
 		return nil
@@ -141,6 +141,8 @@ COPY index.html /usr/share/nginx/html/index.html
 
 	comp := testutil.NewComposeDir(t, dockerComposeYAML)
 	defer comp.CleanUp()
+	projectName := comp.ProjectName()
+	t.Logf("projectName=%q", projectName)
 
 	comp.WriteFile("Dockerfile", dockerfile)
 	comp.WriteFile("index.html", indexHTML)
@@ -262,6 +264,8 @@ services:
 
 	comp := testutil.NewComposeDir(t, dockerComposeYAML)
 	defer comp.CleanUp()
+	projectName := comp.ProjectName()
+	t.Logf("projectName=%q", projectName)
 
 	base.Env = append(os.Environ(), "ADDRESS=0.0.0.0")
 
@@ -290,6 +294,8 @@ services:
 
 	comp := testutil.NewComposeDir(t, dockerComposeYAML)
 	defer comp.CleanUp()
+	projectName := comp.ProjectName()
+	t.Logf("projectName=%q", projectName)
 
 	envFile := `TAG=1.19-alpine-org`
 	comp.WriteFile(".env", envFile)
@@ -311,6 +317,8 @@ services:
 
 	comp := testutil.NewComposeDir(t, dockerComposeYAML)
 	defer comp.CleanUp()
+	projectName := comp.ProjectName()
+	t.Logf("projectName=%q", projectName)
 
 	envFile := `TAG=1.19-alpine-org`
 	comp.WriteFile("envFile", envFile)
@@ -334,7 +342,6 @@ services:
 
 	comp := testutil.NewComposeDir(t, dockerComposeYAML)
 	defer comp.CleanUp()
-
 	projectName := comp.ProjectName()
 	t.Logf("projectName=%q", projectName)
 
@@ -364,7 +371,6 @@ networks:
 
 	comp := testutil.NewComposeDir(t, dockerComposeYAML)
 	defer comp.CleanUp()
-
 	projectName := comp.ProjectName()
 	t.Logf("projectName=%q", projectName)
 
@@ -427,7 +433,6 @@ services:
 
 	comp := testutil.NewComposeDir(t, dockerComposeYAML)
 	defer comp.CleanUp()
-
 	projectName := comp.ProjectName()
 	t.Logf("projectName=%q", projectName)
 
@@ -435,7 +440,6 @@ services:
 	defer base.ComposeCmd("-f", comp.YAMLFullPath(), "down", "-v").Run()
 	base.ComposeCmd("-f", comp.YAMLFullPath(), "up", "-d").AssertOK()
 	base.ComposeCmd("-f", comp.YAMLFullPath(), "down").AssertOK()
-
 }
 
 func TestComposeUpWithExternalNetwork(t *testing.T) {
@@ -489,4 +493,52 @@ networks:
 	// Run the second compose again
 	base.ComposeCmd("-f", comp2.YAMLFullPath(), "up", "-d").AssertOK()
 	base.Cmd("exec", containerName1, "wget", "-qO-", "http://"+containerName2).AssertOutContains(testutil.NginxAlpineIndexHTMLSnippet)
+}
+
+func TestComposeUpWithBypass4netns(t *testing.T) {
+	// docker does not support bypass4netns mode
+	testutil.DockerIncompatible(t)
+	if !rootlessutil.IsRootless() {
+		t.Skip("test needs rootless")
+	}
+	testutil.RequireKernelVersion(t, ">= 5.9.0-0")
+	testutil.RequireSystemService(t, "bypass4netnsd")
+	base := testutil.NewBase(t)
+	testComposeUp(t, base, fmt.Sprintf(`
+version: '3.1'
+
+services:
+
+  wordpress:
+    image: %s
+    restart: always
+    ports:
+      - 8080:80
+    environment:
+      WORDPRESS_DB_HOST: db
+      WORDPRESS_DB_USER: exampleuser
+      WORDPRESS_DB_PASSWORD: examplepass
+      WORDPRESS_DB_NAME: exampledb
+    volumes:
+      - wordpress:/var/www/html
+    labels:
+      - nerdctl/bypass4netns=1
+
+  db:
+    image: %s
+    restart: always
+    environment:
+      MYSQL_DATABASE: exampledb
+      MYSQL_USER: exampleuser
+      MYSQL_PASSWORD: examplepass
+      MYSQL_RANDOM_ROOT_PASSWORD: '1'
+    volumes:
+      - db:/var/lib/mysql
+    labels:
+      - nerdctl/bypass4netns=1
+
+volumes:
+  wordpress:
+  db:
+`, testutil.WordpressImage, testutil.MariaDBImage))
 }

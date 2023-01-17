@@ -24,6 +24,7 @@ import (
 	"github.com/containerd/containerd"
 	"github.com/containerd/containerd/images"
 	"github.com/containerd/containerd/platforms"
+	"github.com/containerd/nerdctl/pkg/clientutil"
 	"github.com/opencontainers/go-digest"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
@@ -45,6 +46,10 @@ func newImagePruneCommand() *cobra.Command {
 }
 
 func imagePruneAction(cmd *cobra.Command, _ []string) error {
+	globalOptions, err := processRootCmdFlags(cmd)
+	if err != nil {
+		return err
+	}
 	all, err := cmd.Flags().GetBool("all")
 	if err != nil {
 		return err
@@ -73,17 +78,16 @@ func imagePruneAction(cmd *cobra.Command, _ []string) error {
 			return nil
 		}
 	}
-
-	client, ctx, cancel, err := newClient(cmd)
+	client, ctx, cancel, err := clientutil.NewClient(cmd.Context(), globalOptions.Namespace, globalOptions.Address)
 	if err != nil {
 		return err
 	}
 	defer cancel()
 
-	return imagePrune(cmd, client, ctx)
+	return imagePrune(ctx, cmd, client)
 }
 
-func imagePrune(cmd *cobra.Command, client *containerd.Client, ctx context.Context) error {
+func imagePrune(ctx context.Context, cmd *cobra.Command, client *containerd.Client) error {
 	var (
 		imageStore     = client.ImageService()
 		contentStore   = client.ContentStore()

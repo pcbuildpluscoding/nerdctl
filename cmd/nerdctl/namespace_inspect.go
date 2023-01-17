@@ -18,6 +18,8 @@ package main
 
 import (
 	"github.com/containerd/containerd/namespaces"
+	"github.com/containerd/nerdctl/pkg/clientutil"
+	"github.com/containerd/nerdctl/pkg/formatter"
 	"github.com/containerd/nerdctl/pkg/inspecttypes/native"
 	"github.com/spf13/cobra"
 )
@@ -39,7 +41,11 @@ func newNamespaceInspectCommand() *cobra.Command {
 }
 
 func labelInspectAction(cmd *cobra.Command, args []string) error {
-	client, ctx, cancel, err := newClient(cmd)
+	globalOptions, err := processRootCmdFlags(cmd)
+	if err != nil {
+		return err
+	}
+	client, ctx, cancel, err := clientutil.NewClient(cmd.Context(), globalOptions.Namespace, globalOptions.Address)
 	if err != nil {
 		return err
 	}
@@ -58,5 +64,9 @@ func labelInspectAction(cmd *cobra.Command, args []string) error {
 		}
 		result[index] = nsInspect
 	}
-	return formatSlice(cmd, result)
+	format, err := cmd.Flags().GetString("format")
+	if err != nil {
+		return err
+	}
+	return formatter.FormatSlice(format, cmd.OutOrStdout(), result)
 }

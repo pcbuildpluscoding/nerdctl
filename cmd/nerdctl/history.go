@@ -29,6 +29,7 @@ import (
 
 	"github.com/containerd/containerd"
 	"github.com/containerd/containerd/pkg/progress"
+	"github.com/containerd/nerdctl/pkg/clientutil"
 	"github.com/containerd/nerdctl/pkg/formatter"
 	"github.com/containerd/nerdctl/pkg/idutil/imagewalker"
 	"github.com/containerd/nerdctl/pkg/imgutil"
@@ -39,9 +40,9 @@ import (
 
 func newHistoryCommand() *cobra.Command {
 	var historyCommand = &cobra.Command{
-		Use:               "history [OPTIONS] IMAGE",
+		Use:               "history [flags] IMAGE",
 		Short:             "Show the history of an image",
-		Args:              cobra.ExactArgs(1),
+		Args:              IsExactArgs(1),
 		RunE:              historyAction,
 		ValidArgsFunction: historyShellComplete,
 		SilenceUsage:      true,
@@ -69,16 +70,15 @@ type historyPrintable struct {
 }
 
 func historyAction(cmd *cobra.Command, args []string) error {
-	client, ctx, cancel, err := newClient(cmd)
+	globalOptions, err := processRootCmdFlags(cmd)
+	if err != nil {
+		return err
+	}
+	client, ctx, cancel, err := clientutil.NewClient(cmd.Context(), globalOptions.Namespace, globalOptions.Address)
 	if err != nil {
 		return err
 	}
 	defer cancel()
-
-	snapshotter, err := cmd.Flags().GetString("snapshotter")
-	if err != nil {
-		return err
-	}
 
 	walker := &imagewalker.ImageWalker{
 		Client: client,
@@ -110,7 +110,7 @@ func historyAction(cmd *cobra.Command, args []string) error {
 					diffIDs := diffIDs[0 : layerCounter+1]
 					chainID := identity.ChainID(diffIDs).String()
 
-					s := client.SnapshotService(snapshotter)
+					s := client.SnapshotService(globalOptions.Snapshotter)
 					stat, err := s.Stat(ctx, chainID)
 					if err != nil {
 						return fmt.Errorf("failed to get stat: %w", err)
@@ -195,7 +195,7 @@ func printHistory(cmd *cobra.Command, historys []historyPrintable) error {
 			return errors.New("format and quiet must not be specified together")
 		}
 		var err error
-		tmpl, err = parseTemplate(format)
+		tmpl, err = formatter.ParseTemplate(format)
 		if err != nil {
 			return err
 		}
@@ -214,7 +214,7 @@ func printHistory(cmd *cobra.Command, historys []historyPrintable) error {
 		}
 	}
 
-	if f, ok := w.(Flusher); ok {
+	if f, ok := w.(formatter.Flusher); ok {
 		return f.Flush()
 	}
 	return nil

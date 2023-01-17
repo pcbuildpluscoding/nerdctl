@@ -17,26 +17,13 @@
 package main
 
 import (
-	"context"
-	"errors"
-
-	"github.com/containerd/containerd"
-	"github.com/containerd/containerd/errdefs"
-	"github.com/containerd/containerd/platforms"
 	"github.com/containerd/nerdctl/pkg/composer"
-	"github.com/containerd/nerdctl/pkg/imgutil"
-	"github.com/containerd/nerdctl/pkg/ipfs"
-	"github.com/containerd/nerdctl/pkg/netutil"
-	"github.com/containerd/nerdctl/pkg/referenceutil"
-	httpapi "github.com/ipfs/go-ipfs-http-client"
-	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
-
 	"github.com/spf13/cobra"
 )
 
 func newComposeCommand() *cobra.Command {
 	var composeCommand = &cobra.Command{
-		Use:              "compose",
+		Use:              "compose [flags] COMMAND",
 		Short:            "Compose",
 		RunE:             unknownSubcommandAction,
 		SilenceUsage:     true,
@@ -48,66 +35,60 @@ func newComposeCommand() *cobra.Command {
 	composeCommand.PersistentFlags().String("project-directory", "", "Specify an alternate working directory")
 	composeCommand.PersistentFlags().StringP("project-name", "p", "", "Specify an alternate project name")
 	composeCommand.PersistentFlags().String("env-file", "", "Specify an alternate environment file")
+	composeCommand.PersistentFlags().String("ipfs-address", "", "multiaddr of IPFS API (default uses $IPFS_PATH env variable if defined or local directory ~/.ipfs)")
 
 	composeCommand.AddCommand(
 		newComposeUpCommand(),
 		newComposeLogsCommand(),
 		newComposeConfigCommand(),
 		newComposeBuildCommand(),
+		newComposeExecCommand(),
+		newComposeImagesCommand(),
+		newComposePortCommand(),
 		newComposePushCommand(),
 		newComposePullCommand(),
 		newComposeDownCommand(),
 		newComposePsCommand(),
 		newComposeKillCommand(),
+		newComposeRestartCommand(),
+		newComposeRemoveCommand(),
+		newComposeRunCommand(),
+		newComposeVersionCommand(),
+		newComposeStartCommand(),
+		newComposeStopCommand(),
+		newComposePauseCommand(),
+		newComposeUnpauseCommand(),
+		newComposeTopCommand(),
+		newComposeCreateCommand(),
 	)
 
 	return composeCommand
 }
 
-func getComposer(cmd *cobra.Command, client *containerd.Client) (*composer.Composer, error) {
+func getComposeOptions(cmd *cobra.Command, debugFull, experimental bool) (composer.Options, error) {
 	nerdctlCmd, nerdctlArgs := globalFlags(cmd)
 	projectDirectory, err := cmd.Flags().GetString("project-directory")
 	if err != nil {
-		return nil, err
+		return composer.Options{}, err
 	}
 	envFile, err := cmd.Flags().GetString("env-file")
 	if err != nil {
-		return nil, err
+		return composer.Options{}, err
 	}
 	projectName, err := cmd.Flags().GetString("project-name")
 	if err != nil {
-		return nil, err
-	}
-	debugFull, err := cmd.Flags().GetBool("debug-full")
-	if err != nil {
-		return nil, err
+		return composer.Options{}, err
 	}
 	files, err := cmd.Flags().GetStringArray("file")
 	if err != nil {
-		return nil, err
+		return composer.Options{}, err
 	}
-	insecure, err := cmd.Flags().GetBool("insecure-registry")
+	ipfsAddressStr, err := cmd.Flags().GetString("ipfs-address")
 	if err != nil {
-		return nil, err
-	}
-	cniPath, err := cmd.Flags().GetString("cni-path")
-	if err != nil {
-		return nil, err
-	}
-	cniNetconfpath, err := cmd.Flags().GetString("cni-netconfpath")
-	if err != nil {
-		return nil, err
-	}
-	snapshotter, err := cmd.Flags().GetString("snapshotter")
-	if err != nil {
-		return nil, err
-	}
-	hostsDirs, err := cmd.Flags().GetStringSlice("hosts-dir")
-	if err != nil {
-		return nil, err
+		return composer.Options{}, err
 	}
 
-	o := composer.Options{
+	return composer.Options{
 		Project:          projectName,
 		ProjectDirectory: projectDirectory,
 		ConfigPaths:      files,
@@ -115,75 +96,7 @@ func getComposer(cmd *cobra.Command, client *containerd.Client) (*composer.Compo
 		NerdctlCmd:       nerdctlCmd,
 		NerdctlArgs:      nerdctlArgs,
 		DebugPrintFull:   debugFull,
-	}
-
-	cniEnv, err := netutil.NewCNIEnv(cniPath, cniNetconfpath)
-	if err != nil {
-		return nil, err
-	}
-
-	o.NetworkExists = func(netName string) (bool, error) {
-		for _, f := range cniEnv.Networks {
-			if f.Name == netName {
-				return true, nil
-			}
-		}
-		return false, nil
-	}
-
-	volStore, err := getVolumeStore(cmd)
-	if err != nil {
-		return nil, err
-	}
-
-	o.VolumeExists = func(volName string) (bool, error) {
-		if _, volGetErr := volStore.Get(volName, false); volGetErr == nil {
-			return true, nil
-		} else if errors.Is(volGetErr, errdefs.ErrNotFound) {
-			return false, nil
-		} else {
-			return false, volGetErr
-		}
-	}
-
-	o.ImageExists = func(ctx context.Context, rawRef string) (bool, error) {
-		refNamed, err := referenceutil.ParseAny(rawRef)
-		if err != nil {
-			return false, err
-		}
-		ref := refNamed.String()
-		if _, err := client.ImageService().Get(ctx, ref); err != nil {
-			if errors.Is(err, errdefs.ErrNotFound) {
-				return false, nil
-			}
-			return false, err
-		}
-		return true, nil
-	}
-
-	o.EnsureImage = func(ctx context.Context, imageName, pullMode, platform string, quiet bool) error {
-		ocispecPlatforms := []ocispec.Platform{platforms.DefaultSpec()}
-		if platform != "" {
-			parsed, err := platforms.Parse(platform)
-			if err != nil {
-				return err
-			}
-			ocispecPlatforms = []ocispec.Platform{parsed} // no append
-		}
-		var imgErr error
-		if scheme, ref, err := referenceutil.ParseIPFSRefWithScheme(imageName); err == nil {
-			ipfsClient, err := httpapi.NewLocalApi()
-			if err != nil {
-				return err
-			}
-			_, imgErr = ipfs.EnsureImage(ctx, client, ipfsClient, cmd.OutOrStdout(), cmd.ErrOrStderr(), snapshotter, scheme, ref,
-				pullMode, ocispecPlatforms, nil, quiet)
-		} else {
-			_, imgErr = imgutil.EnsureImage(ctx, client, cmd.OutOrStdout(), cmd.ErrOrStderr(), snapshotter, imageName,
-				pullMode, insecure, hostsDirs, ocispecPlatforms, nil, quiet)
-		}
-		return imgErr
-	}
-
-	return composer.New(o, client)
+		Experimental:     experimental,
+		IPFSAddress:      ipfsAddressStr,
+	}, nil
 }

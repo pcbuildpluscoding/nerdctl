@@ -50,7 +50,7 @@ func TestRunVolume(t *testing.T) {
 	}
 
 	containerName := tID
-	defer base.Cmd("rm", "-f", containerName).Run()
+	defer base.Cmd("rm", "-f", containerName).AssertOK()
 	base.Cmd("run",
 		"-d",
 		"--name", containerName,
@@ -79,6 +79,13 @@ func TestRunAnonymousVolume(t *testing.T) {
 	t.Parallel()
 	base := testutil.NewBase(t)
 	base.Cmd("run", "--rm", "-v", "/foo", testutil.AlpineImage,
+		"mountpoint", "-q", "/foo").AssertOK()
+}
+
+func TestRunAnonymousVolumeWithTypeMountFlag(t *testing.T) {
+	t.Parallel()
+	base := testutil.NewBase(t)
+	base.Cmd("run", "--rm", "--mount", "type=volume,dst=/foo", testutil.AlpineImage,
 		"mountpoint", "-q", "/foo").AssertOK()
 }
 
@@ -295,7 +302,7 @@ func TestRunBindMountBind(t *testing.T) {
 	}
 
 	containerName := tID
-	defer base.Cmd("rm", "-f", containerName).Run()
+	defer base.Cmd("rm", "-f", containerName).AssertOK()
 	base.Cmd("run",
 		"-d",
 		"--name", containerName,

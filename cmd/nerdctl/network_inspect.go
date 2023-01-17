@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/containerd/nerdctl/pkg/formatter"
 	"github.com/containerd/nerdctl/pkg/inspecttypes/dockercompat"
 	"github.com/containerd/nerdctl/pkg/inspecttypes/native"
 	"github.com/containerd/nerdctl/pkg/netutil"
@@ -49,20 +50,19 @@ func newNetworkInspectCommand() *cobra.Command {
 }
 
 func networkInspectAction(cmd *cobra.Command, args []string) error {
-	cniPath, err := cmd.Flags().GetString("cni-path")
+	globalOptions, err := processRootCmdFlags(cmd)
 	if err != nil {
 		return err
 	}
-	cniNetconfpath, err := cmd.Flags().GetString("cni-netconfpath")
-	if err != nil {
-		return err
-	}
-	e, err := netutil.NewCNIEnv(cniPath, cniNetconfpath)
+	e, err := netutil.NewCNIEnv(globalOptions.CNIPath, globalOptions.CNINetConfPath)
 	if err != nil {
 		return err
 	}
 
-	netMap := e.NetworkMap()
+	netMap, err := e.NetworkMap()
+	if err != nil {
+		return err
+	}
 
 	result := make([]interface{}, len(args))
 	for i, name := range args {
@@ -97,8 +97,11 @@ func networkInspectAction(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("unknown mode %q", mode)
 		}
 	}
-
-	return formatSlice(cmd, result)
+	format, err := cmd.Flags().GetString("format")
+	if err != nil {
+		return err
+	}
+	return formatter.FormatSlice(format, cmd.OutOrStdout(), result)
 }
 
 func networkInspectShellComplete(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {

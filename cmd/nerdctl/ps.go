@@ -19,6 +19,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -33,9 +34,12 @@ import (
 	"github.com/containerd/containerd/containers"
 	"github.com/containerd/containerd/errdefs"
 	"github.com/containerd/containerd/pkg/progress"
+	"github.com/containerd/containerd/snapshots"
+	"github.com/containerd/nerdctl/pkg/clientutil"
 	"github.com/containerd/nerdctl/pkg/formatter"
 	"github.com/containerd/nerdctl/pkg/labels"
 	"github.com/containerd/nerdctl/pkg/labels/k8slabels"
+	"github.com/opencontainers/image-spec/identity"
 	"github.com/sirupsen/logrus"
 
 	"github.com/spf13/cobra"
@@ -62,11 +66,16 @@ func newPsCommand() *cobra.Command {
 	psCommand.RegisterFlagCompletionFunc("format", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		return []string{"json", "table", "wide"}, cobra.ShellCompDirectiveNoFileComp
 	})
+	psCommand.Flags().StringSliceP("filter", "f", nil, "Filter matches containers based on given conditions")
 	return psCommand
 }
 
 func psAction(cmd *cobra.Command, args []string) error {
-	client, ctx, cancel, err := newClient(cmd)
+	globalOptions, err := processRootCmdFlags(cmd)
+	if err != nil {
+		return err
+	}
+	client, ctx, cancel, err := clientutil.NewClient(cmd.Context(), globalOptions.Namespace, globalOptions.Address)
 	if err != nil {
 		return err
 	}
@@ -90,6 +99,15 @@ func psAction(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	filters, err := cmd.Flags().GetStringSlice("filter")
+	if err != nil {
+		return err
+	}
+	filterCtx, err := foldContainerFilters(ctx, containers, filters)
+	if err != nil {
+		return err
+	}
+	containers = filterCtx.MatchesFilters(ctx)
 	if lastN > 0 {
 		all = true
 		sort.Slice(containers, func(i, j int) bool {
@@ -171,7 +189,7 @@ func printContainers(ctx context.Context, client *containerd.Client, cmd *cobra.
 			return errors.New("format and quiet must not be specified together")
 		}
 		var err error
-		tmpl, err = parseTemplate(format)
+		tmpl, err = formatter.ParseTemplate(format)
 		if err != nil {
 			return err
 		}
@@ -208,7 +226,7 @@ func printContainers(ctx context.Context, client *containerd.Client, cmd *cobra.
 		}
 
 		p := containerPrintable{
-			Command:   formatter.InspectContainerCommand(spec, trunc),
+			Command:   formatter.InspectContainerCommand(spec, trunc, true),
 			CreatedAt: info.CreatedAt.Round(time.Second).Local().String(), // format like "2021-08-07 02:19:45 +0900 JST"
 			ID:        id,
 			Image:     imageName,
@@ -266,7 +284,7 @@ func printContainers(ctx context.Context, client *containerd.Client, cmd *cobra.
 		}
 
 	}
-	if f, ok := w.(Flusher); ok {
+	if f, ok := w.(formatter.Flusher); ok {
 		return f.Flush()
 	}
 	return nil
@@ -282,13 +300,63 @@ func getPrintableContainerName(containerLabels map[string]string) string {
 			if containerName, ok := containerLabels[k8slabels.ContainerName]; ok {
 				// Container
 				return fmt.Sprintf("k8s://%s/%s/%s", ns, podName, containerName)
-			} else {
-				// Pod sandbox
-				return fmt.Sprintf("k8s://%s/%s", ns, podName)
 			}
+			// Pod sandbox
+			return fmt.Sprintf("k8s://%s/%s", ns, podName)
 		}
 	}
 	return ""
+}
+
+type containerVolume struct {
+	Type        string
+	Name        string
+	Source      string
+	Destination string
+	Mode        string
+	RW          bool
+	Propagation string
+}
+
+func getContainerVolumes(containerLabels map[string]string) []*containerVolume {
+	var vols []*containerVolume
+	volLabels := []string{labels.AnonymousVolumes, labels.Mounts}
+	for _, volLabel := range volLabels {
+		names, ok := containerLabels[volLabel]
+		if !ok {
+			continue
+		}
+		var (
+			volumes []*containerVolume
+			err     error
+		)
+		if volLabel == labels.Mounts {
+			err = json.Unmarshal([]byte(names), &volumes)
+		}
+		if volLabel == labels.AnonymousVolumes {
+			var anonymous []string
+			err = json.Unmarshal([]byte(names), &anonymous)
+			for _, anony := range anonymous {
+				volumes = append(volumes, &containerVolume{Name: anony})
+			}
+
+		}
+		if err != nil {
+			logrus.Warn(err)
+		}
+		vols = append(vols, volumes...)
+	}
+	return vols
+}
+
+func getContainerNetworks(containerLables map[string]string) []string {
+	var networks []string
+	if names, ok := containerLables[labels.Networks]; ok {
+		if err := json.Unmarshal([]byte(names), &networks); err != nil {
+			logrus.Warn(err)
+		}
+	}
+	return networks
 }
 
 func getContainerSize(ctx context.Context, client *containerd.Client, c containerd.Container, info containers.Container) (string, error) {
@@ -318,4 +386,58 @@ func getContainerSize(ctx context.Context, client *containerd.Client, c containe
 	}
 
 	return fmt.Sprintf("%s (virtual %s)", progress.Bytes(containerSize).String(), progress.Bytes(imageSize).String()), nil
+}
+
+// TODO: this code should be remove to a common package after the refactor completed
+type snapshotKey string
+
+// recursive function to calculate total usage of key's parent
+func (key snapshotKey) add(ctx context.Context, s snapshots.Snapshotter, usage *snapshots.Usage) error {
+	if key == "" {
+		return nil
+	}
+	u, err := s.Usage(ctx, string(key))
+	if err != nil {
+		return err
+	}
+
+	usage.Add(u)
+
+	info, err := s.Stat(ctx, string(key))
+	if err != nil {
+		return err
+	}
+
+	key = snapshotKey(info.Parent)
+	return key.add(ctx, s, usage)
+}
+
+// unpackedImageSize is the size of the unpacked snapshots.
+// Does not contain the size of the blobs in the content store. (Corresponds to Docker).
+func unpackedImageSize(ctx context.Context, s snapshots.Snapshotter, img containerd.Image) (int64, error) {
+	diffIDs, err := img.RootFS(ctx)
+	if err != nil {
+		return 0, err
+	}
+
+	chainID := identity.ChainID(diffIDs).String()
+	usage, err := s.Usage(ctx, chainID)
+	if err != nil {
+		if errdefs.IsNotFound(err) {
+			logrus.WithError(err).Debugf("image %q seems not unpacked", img.Name())
+			return 0, nil
+		}
+		return 0, err
+	}
+
+	info, err := s.Stat(ctx, chainID)
+	if err != nil {
+		return 0, err
+	}
+
+	//add ChainID's parent usage to the total usage
+	if err := snapshotKey(info.Parent).add(ctx, s, &usage); err != nil {
+		return 0, err
+	}
+	return usage.Size, nil
 }

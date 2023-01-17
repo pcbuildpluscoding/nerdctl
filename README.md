@@ -101,6 +101,7 @@ In addition to containerd, the following components should be installed:
 - [CNI plugins](https://github.com/containernetworking/plugins): for using `nerdctl run`.
    - v1.1.0 or later is highly recommended. Older versions require extra [CNI isolation plugin](https://github.com/AkihiroSuda/cni-isolation) for isolating bridge networks (`nerdctl network create`).
 - [BuildKit](https://github.com/moby/buildkit) (OPTIONAL): for using `nerdctl build`. BuildKit daemon (`buildkitd`) needs to be running. See also [the document about setting up BuildKit](./docs/build.md).
+   - v0.11.0 or later is highly recommended. Some features, such as pruning caches with `nerdctl system prune`, do not work with older versions.
 - [RootlessKit](https://github.com/rootless-containers/rootlesskit) and [slirp4netns](https://github.com/rootless-containers/slirp4netns) (OPTIONAL): for [Rootless mode](./docs/rootless.md)
    - RootlessKit needs to be v0.10.0 or later. v0.14.1 or later is recommended.
    - slirp4netns needs to be v0.4.0 or later. v1.1.7 or later is recommended.
@@ -157,7 +158,7 @@ Major:
   P2P image distribution (IPFS) is completely optional. Your host is NOT connected to any P2P network, unless you opt in to [install and run IPFS daemon](https://docs.ipfs.io/install/).
 - Recursive read-only (RRO) bind-mount: `nerdctl run -v /mnt:/mnt:rro` (make children such as `/mnt/usb` to be read-only, too).
   Requires kernel >= 5.12, and crun >= 1.4 or runc >= 1.1 (PR [#3272](https://github.com/opencontainers/runc/pull/3272)).
-- [Cosign integration](./docs/cosign.md): `nerdctl pull --verify=cosign` and `nerdctl push --sign=cosign`
+- [Cosign integration](./docs/cosign.md): `nerdctl pull --verify=cosign` and `nerdctl push --sign=cosign`, and [in Compose](./docs/cosign.md#cosign-in-compose)
 - [Accelerated rootless containers using bypass4netns](./docs/rootless.md): `nerdctl run --label nerdctl/bypass4netns=true`
 
 Minor:
@@ -177,7 +178,7 @@ Trivial:
 
 ## Similar tools
 
-- [`ctr`](https://github.com/containerd/containerd/tree/master/cmd/ctr): incompatible with Docker CLI, and not friendly to users.
+- [`ctr`](https://github.com/containerd/containerd/tree/main/cmd/ctr): incompatible with Docker CLI, and not friendly to users.
   Notably, `ctr` lacks the equivalents of the following nerdctl commands:
   - `nerdctl run -p <PORT>`
   - `nerdctl run --restart=always --net=bridge`
@@ -194,9 +195,9 @@ Trivial:
 ## Developer guide
 nerdctl is a containerd **non-core** sub-project, licensed under the [Apache 2.0 license](./LICENSE).
 As a containerd non-core sub-project, you will find the:
- * [Project governance](https://github.com/containerd/project/blob/master/GOVERNANCE.md),
+ * [Project governance](https://github.com/containerd/project/blob/main/GOVERNANCE.md),
  * [Maintainers](./MAINTAINERS),
- * and [Contributing guidelines](https://github.com/containerd/project/blob/master/CONTRIBUTING.md)
+ * and [Contributing guidelines](https://github.com/containerd/project/blob/main/CONTRIBUTING.md)
 
 information in our [`containerd/project`](https://github.com/containerd/project) repository.
 
@@ -265,7 +266,7 @@ It does not necessarily mean that the corresponding features are missing in cont
     - [:whale: nerdctl kill](#whale-nerdctl-kill)
     - [:whale: nerdctl pause](#whale-nerdctl-pause)
     - [:whale: nerdctl unpause](#whale-nerdctl-unpause)
-    - [:whale: docker rename](#whale-docker-rename)
+    - [:whale: nerdctl rename](#whale-nerdctl-rename)
     - [:whale: nerdctl container prune](#whale-nerdctl-container-prune)
   - [Build](#build)
     - [:whale: nerdctl build](#whale-nerdctl-build)
@@ -331,15 +332,26 @@ It does not necessarily mean that the corresponding features are missing in cont
     - [:whale: nerdctl compose up](#whale-nerdctl-compose-up)
     - [:whale: nerdctl compose logs](#whale-nerdctl-compose-logs)
     - [:whale: nerdctl compose build](#whale-nerdctl-compose-build)
+    - [:whale: nerdctl compose create](#whale-nerdctl-compose-create)
+    - [:whale: nerdctl compose exec](#whale-nerdctl-compose-exec)
     - [:whale: nerdctl compose down](#whale-nerdctl-compose-down)
+    - [:whale: nerdctl compose images](#whale-nerdctl-compose-images)
+    - [:whale: nerdctl compose start](#whale-nerdctl-compose-start)
+    - [:whale: nerdctl compose stop](#whale-nerdctl-compose-stop)
+    - [:whale: nerdctl compose port](#whale-nerdctl-compose-port)
     - [:whale: nerdctl compose ps](#whale-nerdctl-compose-ps)
     - [:whale: nerdctl compose pull](#whale-nerdctl-compose-pull)
     - [:whale: nerdctl compose push](#whale-nerdctl-compose-push)
+    - [:whale: nerdctl compose pause](#whale-nerdctl-compose-pause)
+    - [:whale: nerdctl compose unpause](#whale-nerdctl-compose-unpause)
     - [:whale: nerdctl compose config](#whale-nerdctl-compose-config)
     - [:whale: nerdctl compose kill](#whale-nerdctl-compose-kill)
+    - [:whale: nerdctl compose restart](#whale-nerdctl-compose-restart)
+    - [:whale: nerdctl compose rm](#whale-nerdctl-compose-rm)
+    - [:whale: nerdctl compose run](#whale-nerdctl-compose-run)
+    - [:whale: nerdctl compose top](#whale-nerdctl-compose-top)
+    - [:whale: nerdctl compose version](#whale-nerdctl-compose-version)
   - [IPFS management](#ipfs-management)
-    - [:nerd_face: nerdctl ipfs registry up](#nerd_face-nerdctl-ipfs-registry-up)
-    - [:nerd_face: nerdctl ipfs registry down](#nerd_face-nerdctl-ipfs-registry-down)
     - [:nerd_face: nerdctl ipfs registry serve](#nerd_face-nerdctl-ipfs-registry-serve)
   - [Global flags](#global-flags)
   - [Unimplemented Docker commands](#unimplemented-docker-commands)
@@ -370,7 +382,8 @@ Basic flags:
 - :whale: `--rm`: Automatically remove the container when it exits
 - :whale: `--pull=(always|missing|never)`: Pull image before running
   - Default: "missing"
-- :whale: `--pid=(host)`: PID namespace to use
+- :whale: `--pid=(host|container:<container>)`: PID namespace to use
+- :whale: `--uts=(host)` : UTS namespace to use
 - :whale: `--stop-signal`: Signal to stop a container (default "SIGTERM")
 - :whale: `--stop-timeout`: Timeout (in seconds) to stop a container
 
@@ -382,6 +395,10 @@ Init process flags:
 - :nerd_face: `--init-binary=<binary-name>`: The custom init binary to use. We suggest you use the [tini](https://github.com/krallin/tini) binary which is used in Docker project to get the same behavior.
   Please make sure the binary exists in your `PATH`.
   - Default: `tini`
+
+Isolation flags:
+- :whale: :blue_square: :nerd_face: `--isolation=(default|process|host)`: Used on Windows to change process isolation level. `default` will use the runtime options configured in `default_runtime` in the [containerd configuration](https://github.com/containerd/containerd/blob/master/docs/cri/config.md#cri-plugin-config-guide) which is `process` in containerd by default. `process` runs process isolated containers.  `host` runs [Host Process containers](https://kubernetes.io/docs/tasks/configure-pod-container/create-hostprocess-pod/).  Host process containers inherit permissions from containerd process unless `--user` is specified then will start with user specified and the user specified must be present on the host.  `host` requires Containerd 1.7+. Not implemented for Linux.
+
 
 Network flags:
 - :whale: `--net, --network=(bridge|host|none|container:<container>|<CNI>)`: Connect a container to a network.
@@ -395,6 +412,9 @@ Network flags:
 - :whale: `-h, --hostname`: Container host name
 - :whale: `--add-host`: Add a custom host-to-IP mapping (host:ip)
 - :whale: `--ip`: Specific static IP address(es) to use
+- :whale: `--mac-address`: Specific MAC address to use. Be aware that it does not
+  check if manually specified MAC addresses are unique. Supports network
+  type `bridge` and `macvlan`
 
 Resource flags:
 - :whale: `--cpus`: Number of CPUs
@@ -409,12 +429,13 @@ Resource flags:
 - :whale: `--memory-swappiness`: Tune container memory swappiness (0 to 100) (default -1)
 - :whale: `--kernel-memory`: Kernel memory limit (deprecated)
 - :whale: `--oom-kill-disable`: Disable OOM Killer
-- :whale: `--oom-score-adj`: Tune container’s OOM preferences (-1000 to 1000)
+- :whale: `--oom-score-adj`: Tune container’s OOM preferences (-1000 to 1000, rootless: 100 to 1000)
 - :whale: `--pids-limit`: Tune container pids limit
 - :nerd_face: `--cgroup-conf`: Configure cgroup v2 (key=value)
 - :whale: `--blkio-weight`: Block IO (relative weight), between 10 and 1000, or 0 to disable (default 0)
 - :whale: `--cgroupns=(host|private)`: Cgroup namespace to use
   - Default: "private" on cgroup v2 hosts, "host" on cgroup v1 hosts
+- :whale: `--cgroup-parent`: Optional parent cgroup for the container
 - :whale: `--device`: Add a host device to the container
 
 Intel RDT flags:
@@ -491,11 +512,14 @@ Metadata flags:
 - :nerd_face: `--pidfile`: file path to write the task's pid. The CLI syntax conforms to Podman convention.
 
 Logging flags:
-- :whale: `--log-driver=(json-file|journald|fluentd)`: Logging driver for the container (default `json-file`).
+- :whale: `--log-driver=(json-file|journald|fluentd|syslog)`: Logging driver for the container (default `json-file`).
     - :whale: `--log-driver=json-file`: The logs are formatted as JSON. The default logging driver for nerdctl.
       - The `json-file` logging driver supports the following logging options:
         - :whale: `--log-opt=max-size=<MAX-SIZE>`: The maximum size of the log before it is rolled. A positive integer plus a modifier representing the unit of measure (k, m, or g). Defaults to unlimited.
         - :whale: `--log-opt=max-file=<MAX-FILE>`: The maximum number of log files that can be present. If rolling the logs creates excess files, the oldest file is removed. Only effective when `max-size` is also set. A positive integer. Defaults to 1.
+        - :nerd_face: `--log-opt=log-path=<LOG-PATH>`: The log path where the logs are written. The path will be created if it does not exist. If the log file exists, the old file will be renamed to `<LOG-PATH>.1`.
+          - Default: `<data-root>/<containerd-socket-hash>/<namespace>/<container-id>/<container-id>-json.log`
+          - Example: `/var/lib/nerdctl/1935db59/containers/default/<container-id>/<container-id>-json.log`
     - :whale: `--log-driver=journald`: Writes log messages to `journald`. The `journald` daemon must be running on the host machine.
       - :whale: `--log-opt=tag=<TEMPLATE>`: Specify template to set `SYSLOG_IDENTIFIER` value in journald logs.
     - :whale: `--log-driver=fluentd`: Writes log messages to `fluentd`. The `fluentd` daemon must be running on the host machine.
@@ -508,6 +532,39 @@ Logging flags:
         - :whale: `--log-opt=fluentd-sub-second-precision=<true|false>`: Enable sub-second precision for fluentd. The default value is false.
         - :nerd_face: `--log-opt=fluentd-async-reconnect-interval=<1s|1ms>`: The time to wait before retrying to reconnect to fluentd. The default value is 0s.
         - :nerd_face: `--log-opt=fluentd-request-ack=<true|false>`: Enable request ack for fluentd. The default value is false.
+    - :whale: `--log-driver=syslog`: Writes log messages to `syslog`. The
+      `syslog` daemon must be running on either the host machine or remote.
+      - The `syslog` logging driver supports the following logging options:
+        - :whale: `--log-opt=syslog-address=<ADDRESS>`: The address of an
+          external `syslog` server. The URI specifier may be
+          `tcp|udp|tcp+tls]://host:port`, `unix://path`, or `unixgram://path`.
+          If the transport is `tcp`, `udp`, or `tcp+tls`, the default port is
+          `514`.
+        - :whale: `--log-opt=syslog-facility=<FACILITY>`: The `syslog` facility to
+          use. Can be the number or name for any valid syslog facility. See the
+          [syslog documentation](https://www.rfc-editor.org/rfc/rfc5424#section-6.2.1).
+        - :whale: `--log-opt=syslog-tls-ca-cert=<VALUE>`: The absolute path to
+          the trust certificates signed by the CA. **Ignored if the address
+          protocol is not `tcp+tls`**.
+        - :whale: `--log-opt=syslog-tls-cert=<VALUE>`: The absolute path to
+          the TLS certificate file. **Ignored if the address protocol is not
+          `tcp+tls`**.
+        - :whale: `--log-opt=syslog-tls-key=<VALUE>`:The absolute path to
+          the TLS key file. **Ignored if the address protocol is not `tcp+tls`**.
+        - :whale: `--log-opt=syslog-tls-skip-verify=<VALUE>`: If set to `true`,
+          TLS verification is skipped when connecting to the daemon.
+          **Ignored if the address protocol is not `tcp+tls`**.
+        - :whale: `--log-opt=syslog-format=<VALUE>`: The `syslog` message format
+          to use. If not specified the local UNIX syslog format is used,
+          without a specified hostname. Specify `rfc3164` for the RFC-3164
+          compatible format, `rfc5424` for RFC-5424 compatible format, or
+          `rfc5424micro` for RFC-5424 compatible format with microsecond
+          timestamp resolution.
+        - :whale: `--log-opt=tag=<VALUE>`: A string that is appended to the
+          `APP-NAME` in the `syslog` message. By default, nerdctl uses the first
+          12 characters of the container ID to tag log messages.
+    - :nerd_face: Accepts a LogURI which is a containerd shim logger. A scheme must be specified for the URI. Example: `nerdctl run -d --log-driver binary:///usr/bin/ctr-journald-shim docker.io/library/hello-world:latest`. An implementation of shim logger can be found at (https://github.com/containerd/containerd/tree/dbef1d56d7ebc05bc4553d72c419ed5ce025b05d/runtime/v2#logging)
+
 
 Shared memory flags:
 - :whale: `--ipc`: IPC namespace to use
@@ -523,11 +580,14 @@ Verify flags:
 - :nerd_face: `--verify`: Verify the image (none|cosign). See [`docs/cosign.md`](./docs/cosign.md) for details.
 - :nerd_face: `--cosign-key`: Path to the public key file, KMS, URI or Kubernetes Secret for `--verify=cosign`
 
+IPFS flags:
+- :nerd_face: `--ipfs-address`: Multiaddr of IPFS API (default uses `$IPFS_PATH` env variable if defined or local directory `~/.ipfs`)
+
 Unimplemented `docker run` flags:
-    `--attach`, `--blkio-weight-device`, `--cgroup-parent`, `--cpu-rt-*`, `--detach-keys`, `--device-*`,
+    `--attach`, `--blkio-weight-device`, `--cpu-rt-*`, `--detach-keys`, `--device-*`,
     `--disable-content-trust`, `--domainname`, `--expose`, `--health-*`, `--ip6`, `--isolation`, `--no-healthcheck`,
     `--link*`, `--mac-address`, `--publish-all`, `--sig-proxy`, `--storage-opt`,
-    `--userns`, `--uts`, `--volume-driver`, `--volumes-from`
+    `--userns`, `--volume-driver`, `--volumes-from`
 
 ### :whale: :blue_square: nerdctl exec
 Run a command in a running container.
@@ -589,8 +649,30 @@ Flags:
   - :nerd_face: `--format=json`: Alias of `--format='{{json .}}'`
 - :whale: `-n, --last`: Show n last created containers (includes all states)
 - :whale: `-l, --latest`: Show the latest created container (includes all states)
+- :whale: `-f, --filter`: Filter containers based on given conditions
+  - :whale: `--filter id=<value>`: Container's ID. Both full ID and
+    truncated ID are supported
+  - :whale: `--filter name=<value>`: Container's name
+  - :whale: `--filter label=<key>=<value>`: Arbitrary string either a key or a
+    key-value pair
+  - :whale: `--filter exited=<value>`: Container's exit code. Only work with
+    `--all`
+  - :whale: `--filter status=<value>`: One of `created, running, paused,
+    stopped, exited, pausing, unknown`. Note that `restarting, removing, dead` are
+    not supported and will be ignored
+  - :whale: `--filter before/since=<ID/name>`: Filter containers created before
+    or after a given ID or name
+  - :whale: `--filter volume=<value>`: Filter by a given mounted volume or bind
+    mount
+  - :whale: `--filter network=<value>`: Filter by a given network
 
-Unimplemented `docker ps` flags: `--filter`
+Following arguments for `--filter` are not supported yet:
+
+1. `--filter ancestor=<value>`
+2. `--filter publish/expose=<port/startport-endport>[/<proto>]`
+3. `--filter health=<value>`
+4. `--filter isolation=<value>`
+5. `--filter is-task=<value>`
 
 ### :whale: :blue_square: nerdctl inspect
 Display detailed information on one or more containers.
@@ -643,6 +725,7 @@ Usage: `nerdctl stop [OPTIONS] CONTAINER [CONTAINER...]`
 
 Flags:
 - :whale: `-t, --time=SECONDS`: Seconds to wait for stop before killing it (default "10")
+  - Tips: If the init process in container is exited after receiving SIGTERM or exited before the time you specified, the container will be exited immediately
 
 ### :whale: nerdctl start
 Start one or more running containers.
@@ -661,6 +744,8 @@ Usage: `nerdctl restart [OPTIONS] CONTAINER [CONTAINER...]`
 
 Flags:
 - :whale: `-t, --time=SECONDS`: Seconds to wait for stop before killing it (default "10")
+  - Tips: If the init process in container is exited after receiving SIGTERM or exited before the time you specified, the container will be exited immediately
+
 
 ### :whale: nerdctl update
 Update configuration of one or more containers.
@@ -679,6 +764,7 @@ Usage: `nerdctl update [OPTIONS] CONTAINER [CONTAINER...]`
 - :whale: `--kernel-memory`: Kernel memory limit (deprecated)
 - :whale: `--pids-limit`: Tune container pids limit
 - :whale: `--blkio-weight`: Block IO (relative weight), between 10 and 1000, or 0 to disable (default 0)
+- :whale: `--restart=(no|always|on-failure|unless-stopped)`: Restart policy to apply when a container exits
 
 ### :whale: nerdctl wait
 Block until one or more containers stop, then print their exit codes.
@@ -703,7 +789,7 @@ Unpause all processes within one or more containers.
 
 Usage: `nerdctl unpause CONTAINER [CONTAINER...]`
 
-### :whale: docker rename
+### :whale: nerdctl rename
 Rename a container.
 
 Usage: `nerdctl rename CONTAINER NEW_NAME`
@@ -785,13 +871,13 @@ Flags:
 - :whale: `-f, --filter`: Filter the images. For now, only 'before=<image:tag>' and 'since=<image:tag>' is supported.
   - :whale: `--filter=before=<image:tag>`: Images created before given image (exclusive)
   - :whale: `--filter=since=<image:tag>`: Images created after given image (exclusive)
+  - :whale: `--filter=label<key>=<value>`: Matches images based on the presence of a label alone or a label and a value
+  - :nerd_face: `--filter=reference=<image:tag>`: Filter images by reference (Matches both docker compatible wildcard pattern and regexp match)
 - :nerd_face: `--names`: Show image names
 
 Following arguments for `--filter` are not supported yet:
 
-1. `--filter=label=<key>=<value>`: Filter images by label
-2. `--filter=reference=<image:tag>`: Filter images by reference
-3. `--filter=dangling=true`: Filter images by dangling
+1. `--filter=dangling=true`: Filter images by dangling
 
 ### :whale: :blue_square: nerdctl pull
 Pull an image from a registry.
@@ -808,6 +894,7 @@ Flags:
 - :whale: `-q, --quiet`: Suppress verbose output
 - :nerd_face: `--verify`: Verify the image (none|cosign). See [`docs/cosign.md`](./docs/cosign.md) for details.
 - :nerd_face: `--cosign-key`: Path to the public key file, KMS, URI or Kubernetes Secret for `--verify=cosign`
+- :nerd_face: `--ipfs-address`: Multiaddr of IPFS API (default uses `$IPFS_PATH` env variable if defined or local directory `~/.ipfs`)
 
 Unimplemented `docker pull` flags: `--all-tags`, `--disable-content-trust` (default true)
 
@@ -915,7 +1002,13 @@ Flags:
 -  `--estargz-record-in=<FILE>`         : read `ctr-remote optimize --record-out=<FILE>` record file. :warning: This flag is experimental and subject to change.
 -  `--estargz-compression-level=<LEVEL>`: eStargz compression level (default: 9)
 -  `--estargz-chunk-size=<SIZE>`        : eStargz chunk size
+-  `--estargz-min-chunk-size=<SIZE>` : The minimal number of bytes of data must be written in one gzip stream (requires stargz-snapshotter >= v0.13.0). Useful for creating a smaller eStargz image (refer to [`./docs/stargz.md`](./docs/stargz.md) for details).
+-  `--estargz-external-toc` : Separate TOC JSON into another image (called \"TOC image\"). The name of TOC image is the original + \"-esgztoc\" suffix. Both eStargz and the TOC image should be pushed to the same registry. (requires stargz-snapshotter >= v0.13.0) Useful for creating a smaller eStargz image (refer to [`./docs/stargz.md`](./docs/stargz.md) for details). :warning: This flag is experimental and subject to change.
+-  `--estargz-keep-diff-id`: Convert to esgz without changing diffID (cannot be used in conjunction with '--estargz-record-in'. must be specified with '--estargz-external-toc')
 -  `--zstdchunked`                      : Use zstd compression instead of gzip (a.k.a zstd:chunked). Should be used in conjunction with '--oci'
+-  `--zstdchunked-record-in=<FILE>` : read `ctr-remote optimize --record-out=<FILE>` record file. :warning: This flag is experimental and subject to change.
+-  `--zstdchunked-compression-level=<LEVEL>`: zstd:chunked compression level (default: 3)
+-  `--zstdchunked-chunk-size=<SIZE>`: zstd:chunked chunk size
 -  `--uncompress`                       : convert tar.gz layers to uncompressed tar layers
 -  `--oci`                              : convert Docker media types to OCI media types
 -  `--platform=<PLATFORM>`              : convert content for a specific platform
@@ -968,7 +1061,7 @@ Flags:
 
 ## Registry
 ### :whale: nerdctl login
-Log in to a Docker registry.
+Log in to a container registry.
 
 Usage: `nerdctl login [OPTIONS] [SERVER]`
 
@@ -978,7 +1071,7 @@ Flags:
 - :whale: `--password-stdin`: Take the password from stdin
 
 ### :whale: nerdctl logout
-Log out from a Docker registry
+Log out from a container registry
 
 Usage: `nerdctl logout [SERVER]`
 
@@ -1037,11 +1130,14 @@ Usage: `nerdctl network inspect [OPTIONS] NETWORK [NETWORK...]`
 
 Flags:
 - :whale: `--format`: Format the output using the given Go template, e.g, `{{json .}}`
+- :nerd_face: `--mode=(dockercompat|native)`: Inspection mode. "native" produces more information.
 
 Unimplemented `docker network inspect` flags: `--verbose`
 
 ### :whale: nerdctl network rm
-Remove one or more networks
+Remove one or more networks by name or identifier
+
+:warning network removal will fail if there are containers attached to it.
 
 Usage: `nerdctl network rm NETWORK [NETWORK...]`
 
@@ -1079,8 +1175,21 @@ Flags:
   - :nerd_face: `--format=wide`: Alias of `--format=table`
   - :nerd_face: `--format=json`: Alias of `--format='{{json .}}'`
 - :nerd_face: `--size`: Display the disk usage of volumes.
+- :whale: `-f, --filter`: Filter volumes based on given conditions.
+    - :whale: `--filter label=<key>=<value>`: Matches volumes by label on both
+      `key` and `value`. If `value` is left empty, matches all volumes with `key`
+      regardless of its value
+    - :whale: `--filter name=<value>`: Matches all volumes with a name containing
+      the `value` string
+    - :nerd_face: `--filter "size=<value>"`: Matches all volumes with a size
+      meets the `value`. `size` operand can be `>=, <=, >, <, =` and `value` must be
+      an integer. Quotes should be used otherwise some shells may treat operand as
+      redirections
 
-Unimplemented `docker volume ls` flags: `--filter`
+Following arguments for `--filter` are not supported yet:
+
+1. `--filter=dangling=true`: Filter volumes by dangling
+2. `--filter=driver=local`: Filter volumes by driver
 
 ### :whale: nerdctl volume inspect
 Display detailed information on one or more volumes
@@ -1299,6 +1408,7 @@ Usage: `nerdctl compose [OPTIONS] [COMMAND]`
 Flags:
 - :whale: `-f, --file`: Specify an alternate compose file
 - :whale: `-p, --project-name`: Specify an alternate project name
+- :nerd_face: `--ipfs-address`: Multiaddr of IPFS API (default uses `$IPFS_PATH` env variable if defined or local directory `~/.ipfs`)
 
 ### :whale: nerdctl compose up
 Create and start containers
@@ -1324,7 +1434,7 @@ Unimplemented `docker compose up` (V2) flags: `--environment`
 ### :whale: nerdctl compose logs
 Create and start containers
 
-Usage: `nerdctl compose logs [OPTIONS]`
+Usage: `nerdctl compose logs [OPTIONS] [SERVICE...]`
 
 Flags:
 - :whale: `--no-color`: Produce monochrome output
@@ -1337,15 +1447,48 @@ Unimplemented `docker compose logs` (V2) flags:  `--since`, `--until`
 ### :whale: nerdctl compose build
 Build or rebuild services.
 
-Usage: `nerdctl compose build [OPTIONS]`
+Usage: `nerdctl compose build [OPTIONS] [SERVICE...]`
 
 Flags:
 - :whale: `--build-arg`: Set build-time variables for services
 - :whale: `--no-cache`: Do not use cache when building the image
-- :whale: `--progress`: Set type of progress output (auto, plain, tty)
+- :whale: `--progress`: Set type of progress output (auto, plain, tty). Use plain to show container output
 - :nerd_face: `--ipfs`: Build images with pulling base images from IPFS. See [`./docs/ipfs.md`](./docs/ipfs.md) for details.
 
 Unimplemented `docker-compose build` (V1) flags:  `--compress`, `--force-rm`, `--memory`, `--no-rm`, `--parallel`, `--pull`, `--quiet`
+
+### :whale: nerdctl compose create
+
+Creates containers for one or more services.
+
+Usage: `nerdctl compose create [OPTIONS] [SERVICE...]`
+
+Flags:
+
+- :whale: `--build`: Build images before starting containers
+- :whale: `--force-recreate`: Recreate containers even if their configuration and image haven't changed
+- :whale: `--no-build`: Don't build an image even if it's missing, conflict with `--build`
+- :whale: `--no-recreate`: Don't recreate containers if they exist, conflict with `--force-recreate`
+- :whale: `--pull`: Pull images before running. (support always|missing|never) (default "missing")
+
+### :whale: nerdctl compose exec
+
+Execute a command on a running container of the service.
+
+Usage: `nerdctl compose exec [OPTIONS] SERVICE COMMAND [ARGS...]`
+
+Flags:
+
+- :whale: `-d, --detach`: Detached mode: Run the command in background
+- :whale: `-e, --env`: Set environment variables
+- :whale: `--index`: Set index of the container if the service has multiple instances. (default 1)
+- :whale: `-i, --interactive`: Keep STDIN open even if not attached (default true)
+- :whale: `--privileged`: Give extended privileges to the command
+- :whale: `-t, --tty`: Allocate a pseudo-TTY
+- :whale: `-u, --user`: Username or UID (format: `<name|uid>[:<group|gid>]`)
+- :whale: `-w, --workdir`: Working directory inside the container
+
+Unimplemented `docker-compose exec` (V2) flags:  `-T, --no-TTY`
 
 ### :whale: nerdctl compose down
 Remove containers and associated resources
@@ -1354,22 +1497,60 @@ Usage: `nerdctl compose down [OPTIONS]`
 
 Flags:
 - :whale: `-v, --volumes`: Remove named volumes declared in the volumes section of the Compose file and anonymous volumes attached to containers
+- :whale: `--remove-orphans`: Remove containers of services not defined in the Compose file.
 
-Unimplemented `docker-compose down` (V1) flags: `--rmi`, `--remove-orphans`, `--timeout`
+Unimplemented `docker-compose down` (V1) flags: `--rmi`, `--timeout`
+
+### :whale: nerdctl compose images
+
+List images used by created containers in services
+
+Usage: `nerdctl compose images [OPTIONS] [SERVICE...]`
+
+Flags:
+
+- :whale: `-q, --quiet`: Only show numeric image IDs
+
+### :whale: nerdctl compose start
+
+Start existing containers for service(s)
+
+Usage: `nerdctl compose start [SERVICE...]`
+
+### :whale: nerdctl compose stop
+
+Stop containers in services without removing them.
+
+Usage: `nerdctl compose stop [OPTIONS] [SERVICE...]`
+
+Flags:
+
+- :whale: `-t, --timeout`: Seconds to wait for stop before killing it (default 10)
+
+### :whale: nerdctl compose port
+
+Print the public port for a port binding of a service container
+
+Usage: `nerdctl compose port [OPTIONS] SERVICE PRIVATE_PORT`
+
+Flags:
+
+- :whale: `--index`: Index of the container if the service has multiple instances. (default 1)
+- :whale: `--protocol`: Protocol of the port (tcp|udp) (default "tcp")
 
 ### :whale: nerdctl compose ps
 List containers of services
 
-Usage: `nerdctl compose ps`
+Usage: `nerdctl compose ps [OPTIONS] [SERVICE...]`
 
 Unimplemented `docker-compose ps` (V1) flags: `--quiet`, `--services`, `--filter`, `--all`
 
-Unimplemented `docker compose ps` (V2) flags: `--format`, `--status`
+Unimplemented `docker compose ps` (V2) flags: `--status`
 
 ### :whale: nerdctl compose pull
 Pull service images
 
-Usage: `nerdctl compose pull`
+Usage: `nerdctl compose pull [OPTIONS] [SERVICE...]`
 
 Flags:
 - :whale: `-q, --quiet`: Pull without printing progress information
@@ -1379,9 +1560,21 @@ Unimplemented `docker-compose pull` (V1) flags: `--ignore-pull-failures`, `--par
 ### :whale: nerdctl compose push
 Push service images
 
-Usage: `nerdctl compose push`
+Usage: `nerdctl compose push [OPTIONS] [SERVICE...]`
 
 Unimplemented `docker-compose pull` (V1) flags: `--ignore-push-failures`
+
+### :whale: nerdctl compose pause
+
+Pause all processes within containers of service(s). They can be unpaused with `nerdctl compose unpause`
+
+Usage: `nerdctl compose pause [SERVICE...]`
+
+### :whale: nerdctl compose unpause
+
+Unpause all processes within containers of service(s)
+
+Usage: `nerdctl compose unpause [SERVICE...]`
 
 ### :whale: nerdctl compose config
 Validate and view the Compose file
@@ -1401,35 +1594,68 @@ Unimplemented `docker compose config` (V2) flags: `--resolve-image-digests`, `--
 ### :whale: nerdctl compose kill
 Force stop service containers
 
-Usage: `nerdctl compose kill`
+Usage: `nerdctl compose kill [OPTIONS] [SERVICE...]`
 
 Flags:
 - :whale: `-s, --signal`: SIGNAL to send to the container (default: "SIGKILL")
+
+### :whale: nerdctl compose restart
+
+Restart containers of given (or all) services
+
+Usage: `nerdctl compose restart [OPTIONS] [SERVICE...]`
+
+Flags:
+
+- :whale: `-t, --timeout`: Seconds to wait before restarting it (default 10)
+
+### :whale: nerdctl compose rm
+
+Remove stopped service containers
+
+Usage: `nerdctl compose rm [OPTIONS] [SERVICE...]`
+
+Flags:
+
+- :whale: `-f, --force`: Don't prompt for confirmation (different with `-f` in `nerdctl rm` which means force deletion).
+- :whale: `-s, --stop`: Stop containers before removing.
+- :whale: `-v, --volumes`: Remove anonymous volumes associated with the container.
+
+### :whale: nerdctl compose run
+Run a one-off command on a service
+
+Usage: `nerdctl compose run [OPTIONS] SERVICE [COMMAND] [ARGS...]`
+
+Unimplemented `docker-compose run` (V1) flags: `--use-aliases`, `--no-TTY`
+
+Unimplemented `docker compose run` (V2) flags: `--use-aliases`, `--no-TTY`, `--tty`
+
+### :whale: nerdctl compose top
+
+Display the running processes of service containers
+
+Usage: `nerdctl compose top [SERVICES...]`
+
+### :whale: nerdctl compose version
+Show the Compose version information (which is the nerdctl version)
+
+Usage: `nerdctl compose version`
+
+Flags:
+- :whale: `-f, --format`: Format the output. Values: [pretty | json] (default "pretty")
+- :whale: `--short`: Shows only Compose's version number
 
 ## IPFS management
 
 P2P image distribution (IPFS) is completely optional. Your host is NOT connected to any P2P network, unless you opt in to [install and run IPFS daemon](https://docs.ipfs.io/install/).
 
-### :nerd_face: nerdctl ipfs registry up
-Start read-only local registry backed by IPFS.
-See [`./docs/ipfs.md`](./docs/ipfs.md) for details.
-
-Usage: `nerdctl ipfs registry up [OPTIONS]`
-
-Flags:
-- :nerd_face: `--listen-registry`: Address to listen (default `localhost:5050`)
-- :nerd_face: `--read-retry-num`: Times to retry query on IPFS (default 0 (no retry))
-- :nerd_face: `--read-timeout`: Timeout duration of a read request to IPFS (default 0 (no timeout))
-
-### :nerd_face: nerdctl ipfs registry down
-Stop and remove read-only local registry backed by IPFS.
-See [`./docs/ipfs.md`](./docs/ipfs.md) for details.
-
-Usage: `nerdctl ipfs registry down`
-
 ### :nerd_face: nerdctl ipfs registry serve
 Serve read-only registry backed by IPFS on localhost.
-Use `nerdctl ipfs registry up`.
+This is needed to run `nerdctl build` with pulling base images from IPFS.
+Other commands (e.g. `nerdctl push ipfs://<image-name>` and `nerdctl pull ipfs://<CID>`) don't require this.
+
+You need to install `ipfs` command on the host.
+See [`./docs/ipfs.md`](./docs/ipfs.md) for details.
 
 Usage: `nerdctl ipfs registry serve [OPTIONS]`
 
@@ -1475,7 +1701,7 @@ Registry:
 - `docker search`
 
 Compose:
-- `docker-compose create|events|exec|images|pause|port|restart|rm|run|scale|start|stop|top|unpause`
+- `docker-compose events|scale`
 
 Others:
 - `docker system df`

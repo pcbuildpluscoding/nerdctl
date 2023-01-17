@@ -102,7 +102,7 @@ $ export CONTAINERD_SNAPSHOTTER=stargz
 $ nerdctl run -it --rm ghcr.io/stargz-containers/alpine:3.10.2-esgz
 ```
 
-See https://github.com/containerd/stargz-snapshotter/blob/master/docs/pre-converted-images.md for the image list.
+See https://github.com/containerd/stargz-snapshotter/blob/main/docs/pre-converted-images.md for the image list.
 
 ## bypass4netns
 | :zap: Requirement | nerdctl >= 0.17 |
@@ -129,13 +129,6 @@ $ nerdctl run -it --rm -p 8080:80 --label nerdctl/bypass4netns=true alpine
 ```
 
 More detail is available at [https://github.com/rootless-containers/bypass4netns/blob/master/README.md](https://github.com/rootless-containers/bypass4netns/blob/master/README.md)
-
-### :warning: Caveats :warning:
-Subnets(`127.0.0.0/8, 10.0.0.0/8`) not handled by bypass4netns is hard-coded.
-Container networks which are not contained in the subnets can be broken or can cause problems.
-
-### TODO
-- Remove hard-coded subnets in pkg/bypass4netnsutil/bypass.go
 
 ## Troubleshooting
 

@@ -21,6 +21,7 @@ import (
 	"fmt"
 
 	"github.com/containerd/containerd"
+	"github.com/containerd/nerdctl/pkg/clientutil"
 	"github.com/containerd/nerdctl/pkg/dnsutil/hostsstore"
 	"github.com/containerd/nerdctl/pkg/idutil/containerwalker"
 	"github.com/containerd/nerdctl/pkg/labels"
@@ -30,8 +31,8 @@ import (
 
 func newRenameCommand() *cobra.Command {
 	var renameCommand = &cobra.Command{
-		Use:               "rename CONTAINER NEW_NAME",
-		Args:              cobra.ExactArgs(2),
+		Use:               "rename [flags] CONTAINER NEW_NAME",
+		Args:              IsExactArgs(2),
 		Short:             "rename a container",
 		RunE:              renameAction,
 		ValidArgsFunction: renameShellComplete,
@@ -42,21 +43,20 @@ func newRenameCommand() *cobra.Command {
 }
 
 func renameAction(cmd *cobra.Command, args []string) error {
-	client, ctx, cancel, err := newClient(cmd)
+	globalOptions, err := processRootCmdFlags(cmd)
+	if err != nil {
+		return err
+	}
+	client, ctx, cancel, err := clientutil.NewClient(cmd.Context(), globalOptions.Namespace, globalOptions.Address)
 	if err != nil {
 		return err
 	}
 	defer cancel()
-	ns, err := cmd.Flags().GetString("namespace")
+	dataStore, err := clientutil.DataStore(globalOptions.DataRoot, globalOptions.Address)
 	if err != nil {
 		return err
 	}
-
-	dataStore, err := getDataStore(cmd)
-	if err != nil {
-		return err
-	}
-	namest, err := namestore.New(dataStore, ns)
+	namest, err := namestore.New(dataStore, globalOptions.Namespace)
 	if err != nil {
 		return err
 	}
@@ -70,7 +70,7 @@ func renameAction(cmd *cobra.Command, args []string) error {
 			if found.MatchCount > 1 {
 				return fmt.Errorf("multiple IDs found with provided prefix: %s", found.Req)
 			}
-			return renameContainer(ctx, found.Container, args[1], ns, namest, hostst)
+			return renameContainer(ctx, found.Container, args[1], globalOptions.Namespace, namest, hostst)
 		},
 	}
 	req := args[0]

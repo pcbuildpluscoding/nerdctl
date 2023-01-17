@@ -20,10 +20,11 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/containerd/cgroups"
-	"github.com/containerd/containerd/sys"
+	"github.com/containerd/containerd/pkg/userns"
 	"github.com/containerd/continuity/testutil/loopback"
 	"github.com/containerd/nerdctl/pkg/testutil"
 	"gotest.tools/v3/assert"
@@ -74,7 +75,7 @@ func TestRunCgroupV2(t *testing.T) {
 0
 `
 
-	//In CgroupV2 CPUWeight replace CPUShares => weight := 1 + ((shares-2)*9999)/262142
+	// In CgroupV2 CPUWeight replace CPUShares => weight := 1 + ((shares-2)*9999)/262142
 	base.Cmd("run", "--rm",
 		"--cpus", "0.42", "--cpuset-mems", "0",
 		"--memory", "42m",
@@ -166,7 +167,7 @@ func TestRunCgroupV1(t *testing.T) {
 }
 
 func TestRunDevice(t *testing.T) {
-	if os.Geteuid() != 0 || sys.RunningInUserNS() {
+	if os.Geteuid() != 0 || userns.RunningInUserNS() {
 		t.Skip("test requires the root in the initial user namespace")
 	}
 
@@ -186,7 +187,7 @@ func TestRunDevice(t *testing.T) {
 
 	base := testutil.NewBase(t)
 	containerName := testutil.Identifier(t)
-	defer base.Cmd("rm", "-f", containerName).Run()
+	defer base.Cmd("rm", "-f", containerName).AssertOK()
 	// lo0 is readable but not writable.
 	// lo1 is readable and writable
 	// lo2 is not accessible.
@@ -261,7 +262,6 @@ func TestParseDevice(t *testing.T) {
 			assert.ErrorContains(t, err, tc.err)
 		}
 	}
-
 }
 
 func TestRunCgroupConf(t *testing.T) {
@@ -283,6 +283,51 @@ func TestRunCgroupConf(t *testing.T) {
 		"cat", "memory.high").AssertOutExactly("33554432\n")
 }
 
+func TestRunCgroupParent(t *testing.T) {
+	t.Parallel()
+	base := testutil.NewBase(t)
+	info := base.Info()
+	containerName := testutil.Identifier(t)
+	defer base.Cmd("rm", "-f", containerName).Run()
+
+	switch info.CgroupDriver {
+	case "none", "":
+		t.Skip("test requires cgroup driver")
+	}
+
+	t.Logf("Using %q cgroup driver", info.CgroupDriver)
+
+	parent := "/foobarbaz"
+	if info.CgroupDriver == "systemd" {
+		// Path separators aren't allowed in systemd path. runc
+		// explicitly checks for this.
+		// https://github.com/opencontainers/runc/blob/016a0d29d1750180b2a619fc70d6fe0d80111be0/libcontainer/cgroups/systemd/common.go#L65-L68
+		parent = "foobarbaz.slice"
+	}
+
+	// cgroup2 without host cgroup ns will just output 0::/ which doesn't help much to verify
+	// we got our expected path. This approach should work for both cgroup1 and 2, there will
+	// just be many more entries for cgroup1 as there'll be an entry per controller.
+	base.Cmd(
+		"run",
+		"-d",
+		"--name",
+		containerName,
+		"--cgroupns=host",
+		"--cgroup-parent", parent,
+		testutil.AlpineImage,
+		"sleep",
+		"infinity",
+	).AssertOK()
+
+	id := base.InspectContainer(containerName).ID
+	expected := filepath.Join(parent, id)
+	if info.CgroupDriver == "systemd" {
+		expected = filepath.Join(parent, fmt.Sprintf("nerdctl-%s", id))
+	}
+	base.Cmd("exec", containerName, "cat", "/proc/self/cgroup").AssertOutContains(expected)
+}
+
 func TestRunBlkioWeightCgroupV2(t *testing.T) {
 	t.Parallel()
 	if cgroups.Mode() != cgroups.Unified {
@@ -298,7 +343,7 @@ func TestRunBlkioWeightCgroupV2(t *testing.T) {
 		t.Skip("test requires cgroup driver")
 	}
 	containerName := testutil.Identifier(t)
-	defer base.Cmd("rm", "-f", containerName).Run()
+	defer base.Cmd("rm", "-f", containerName).AssertOK()
 	// when bfq io scheduler is used, the io.weight knob is exposed as io.bfq.weight
 	base.Cmd("run", "--name", containerName, "--blkio-weight", "300", "-w", "/sys/fs/cgroup", testutil.AlpineImage, "sleep", "infinity").AssertOK()
 	base.Cmd("exec", containerName, "cat", "io.bfq.weight").AssertOutExactly("default 300\n")
