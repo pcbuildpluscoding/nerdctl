@@ -16,11 +16,58 @@
 
 package types
 
-type NetworkListCommandOptions struct {
+import (
+	"io"
+
+	"github.com/containerd/nerdctl/pkg/netutil"
+)
+
+// NetworkCreateOptions specifies options for `nerdctl network create`.
+type NetworkCreateOptions struct {
+	// GOptions is the global options
+	GOptions GlobalCommandOptions
+	// CreateOptions is the option for creating network
+	CreateOptions netutil.CreateOptions
+}
+
+// NetworkInspectOptions specifies options for `nerdctl network inspect`.
+type NetworkInspectOptions struct {
+	Stdout io.Writer
+	// GOptions is the global options
+	GOptions GlobalCommandOptions
+	// Inspect mode, "dockercompat" for Docker-compatible output, "native" for containerd-native output
+	Mode string
+	// Format the output using the given Go template, e.g, '{{json .}}'
+	Format string
+	// Networks are the networks to be inspected
+	Networks []string
+}
+
+// NetworkListOptions specifies options for `nerdctl network ls`.
+type NetworkListOptions struct {
+	Stdout io.Writer
 	// GOptions is the global options
 	GOptions GlobalCommandOptions
 	// Quiet only show numeric IDs
 	Quiet bool
 	// Format the output using the given Go template, e.g, '{{json .}}', 'wide'
 	Format string
+}
+
+// NetworkPruneOptions specifies options for `nerdctl network prune`.
+type NetworkPruneOptions struct {
+	Stdout io.Writer
+	// GOptions is the global options
+	GOptions GlobalCommandOptions
+	// Network drivers to keep while pruning
+	NetworkDriversToKeep []string
+}
+
+// NetworkRemoveOptions specifies options for `nerdctl network rm`.
+type NetworkRemoveOptions struct {
+	Stdout io.Writer
+	// GOptions is the global options
+	GOptions GlobalCommandOptions
+	// Networks are the networks to be removed
+	Networks []string
 }

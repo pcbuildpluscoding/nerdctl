@@ -24,11 +24,11 @@ import (
 	"github.com/containerd/nerdctl/pkg/defaults"
 )
 
-func Inspect(options *types.ApparmorInspectCommandOptions) error {
+func Inspect(options types.ApparmorInspectOptions) error {
 	b, err := apparmor.DumpDefaultProfile(defaults.AppArmorProfileName)
 	if err != nil {
 		return err
 	}
-	_, err = fmt.Fprint(options.Writer, b)
+	_, err = fmt.Fprint(options.Stdout, b)
 	return err
 }

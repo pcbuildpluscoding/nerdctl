@@ -19,7 +19,6 @@ package container
 import (
 	"context"
 	"fmt"
-	"io"
 	"os"
 	"strings"
 	"syscall"
@@ -28,26 +27,21 @@ import (
 	"github.com/containerd/containerd/cio"
 	"github.com/containerd/containerd/errdefs"
 	"github.com/containerd/nerdctl/pkg/api/types"
-	"github.com/containerd/nerdctl/pkg/clientutil"
 	"github.com/containerd/nerdctl/pkg/idutil/containerwalker"
 	"github.com/moby/sys/signal"
 	"github.com/sirupsen/logrus"
 )
 
-func Kill(ctx context.Context, reqs []string, opt types.KillCommandOptions, stdout, stderr io.Writer) error {
-	if !strings.HasPrefix(opt.KillSignal, "SIG") {
-		opt.KillSignal = "SIG" + opt.KillSignal
+// Kill kills a list of containers
+func Kill(ctx context.Context, client *containerd.Client, reqs []string, options types.ContainerKillOptions) error {
+	if !strings.HasPrefix(options.KillSignal, "SIG") {
+		options.KillSignal = "SIG" + options.KillSignal
 	}
 
-	parsedSignal, err := signal.ParseSignal(opt.KillSignal)
+	parsedSignal, err := signal.ParseSignal(options.KillSignal)
 	if err != nil {
 		return err
 	}
-	client, ctx, cancel, err := clientutil.NewClient(ctx, opt.GOptions.Namespace, opt.GOptions.Address)
-	if err != nil {
-		return err
-	}
-	defer cancel()
 
 	walker := &containerwalker.ContainerWalker{
 		Client: client,
@@ -57,24 +51,17 @@ func Kill(ctx context.Context, reqs []string, opt types.KillCommandOptions, stdo
 			}
 			if err := killContainer(ctx, found.Container, parsedSignal); err != nil {
 				if errdefs.IsNotFound(err) {
-					fmt.Fprintf(stderr, "No such container: %s\n", found.Req)
+					fmt.Fprintf(options.Stderr, "No such container: %s\n", found.Req)
 					os.Exit(1)
 				}
 				return err
 			}
-			_, err := fmt.Fprintf(stdout, "%s\n", found.Container.ID())
+			_, err := fmt.Fprintf(options.Stdout, "%s\n", found.Container.ID())
 			return err
 		},
 	}
-	for _, req := range reqs {
-		n, err := walker.Walk(ctx, req)
-		if err != nil {
-			return err
-		} else if n == 0 {
-			return fmt.Errorf("no such container %s", req)
-		}
-	}
-	return nil
+
+	return walker.WalkAll(ctx, reqs, true)
 }
 
 func killContainer(ctx context.Context, container containerd.Container, signal syscall.Signal) error {

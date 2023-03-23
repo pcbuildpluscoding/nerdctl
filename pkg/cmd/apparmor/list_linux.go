@@ -28,14 +28,14 @@ import (
 	"github.com/containerd/nerdctl/pkg/formatter"
 )
 
-func List(options *types.ApparmorListCommandOptions) error {
+func List(options types.ApparmorListOptions) error {
 	quiet := options.Quiet
-	w := options.Writer
+	w := options.Stdout
 	var tmpl *template.Template
 	format := options.Format
 	switch format {
 	case "", "table", "wide":
-		w = tabwriter.NewWriter(options.Writer, 4, 8, 4, ' ', 0)
+		w = tabwriter.NewWriter(w, 4, 8, 4, ' ', 0)
 		if !quiet {
 			fmt.Fprintln(w, "NAME\tMODE")
 		}

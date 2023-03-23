@@ -42,8 +42,8 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-func Build(ctx context.Context, options *types.BuildCommandOptions, stdin io.Reader, stdout, stderr io.Writer) error {
-	buildctlBinary, buildctlArgs, needsLoading, metaFile, tags, cleanup, err := generateBuildctlArgs(ctx, stdin, options)
+func Build(ctx context.Context, client *containerd.Client, options types.BuilderBuildOptions) error {
+	buildctlBinary, buildctlArgs, needsLoading, metaFile, tags, cleanup, err := generateBuildctlArgs(ctx, client, options)
 	if err != nil {
 		return err
 	}
@@ -62,10 +62,10 @@ func Build(ctx context.Context, options *types.BuildCommandOptions, stdin io.Rea
 			return err
 		}
 	} else {
-		buildctlCmd.Stdout = stdout
+		buildctlCmd.Stdout = options.Stdout
 	}
 	if !options.Quiet {
-		buildctlCmd.Stderr = stderr
+		buildctlCmd.Stderr = options.Stderr
 	}
 
 	if err := buildctlCmd.Start(); err != nil {
@@ -77,7 +77,7 @@ func Build(ctx context.Context, options *types.BuildCommandOptions, stdin io.Rea
 		if err != nil {
 			return err
 		}
-		if err = loadImage(ctx, buildctlStdout, options.GOptions.Namespace, options.GOptions.Address, options.GOptions.Snapshotter, stdout, platMC, options.Quiet); err != nil {
+		if err = loadImage(ctx, buildctlStdout, options.GOptions.Namespace, options.GOptions.Address, options.GOptions.Snapshotter, options.Stdout, platMC, options.Quiet); err != nil {
 			return err
 		}
 	}
@@ -97,12 +97,7 @@ func Build(ctx context.Context, options *types.BuildCommandOptions, stdin io.Rea
 	}
 
 	if len(tags) > 1 {
-		client, ctx, cancel, err := clientutil.NewClient(ctx, options.GOptions.Namespace, options.GOptions.Address)
 		logrus.Debug("Found more than 1 tag")
-		if err != nil {
-			return fmt.Errorf("unable to tag images: %s", err)
-		}
-		defer cancel()
 		imageService := client.ImageService()
 		image, err := imageService.Get(ctx, tags[0])
 		if err != nil {
@@ -171,7 +166,7 @@ func loadImage(ctx context.Context, in io.Reader, namespace, address, snapshotte
 	return nil
 }
 
-func generateBuildctlArgs(ctx context.Context, stdin io.Reader, options *types.BuildCommandOptions) (buildCtlBinary string,
+func generateBuildctlArgs(ctx context.Context, client *containerd.Client, options types.BuilderBuildOptions) (buildCtlBinary string,
 	buildctlArgs []string, needsLoading bool, metaFile string, tags []string, cleanup func(), err error) {
 
 	buildctlBinary, err := buildkitutil.BuildctlBinary()
@@ -181,11 +176,6 @@ func generateBuildctlArgs(ctx context.Context, stdin io.Reader, options *types.B
 
 	output := options.Output
 	if output == "" {
-		client, ctx, cancel, err := clientutil.NewClient(ctx, options.GOptions.Namespace, options.GOptions.Address)
-		if err != nil {
-			return "", nil, false, "", nil, nil, err
-		}
-		defer cancel()
 		info, err := client.Server(ctx)
 		if err != nil {
 			return "", nil, false, "", nil, nil, err
@@ -251,7 +241,7 @@ func generateBuildctlArgs(ctx context.Context, stdin io.Reader, options *types.B
 		if options.File == "-" {
 			// Super Warning: this is a special trick to update the dir variable, Don't move this line!!!!!!
 			var err error
-			dir, err = buildkitutil.WriteTempDockerfile(stdin)
+			dir, err = buildkitutil.WriteTempDockerfile(options.Stdin)
 			if err != nil {
 				return "", nil, false, "", nil, nil, err
 			}
@@ -282,8 +272,10 @@ func generateBuildctlArgs(ctx context.Context, stdin io.Reader, options *types.B
 		buildctlArgs = append(buildctlArgs, "--opt=platform="+strings.Join(options.Platform, ","))
 	}
 
+	seenBuildArgs := make(map[string]struct{})
 	for _, ba := range strutil.DedupeStrSlice(options.BuildArgs) {
 		arr := strings.Split(ba, "=")
+		seenBuildArgs[arr[0]] = struct{}{}
 		if len(arr) == 1 && len(arr[0]) > 0 {
 			// Avoid masking default build arg value from Dockerfile if environment variable is not set
 			// https://github.com/moby/moby/issues/24101
@@ -311,6 +303,14 @@ func generateBuildctlArgs(ctx context.Context, stdin io.Reader, options *types.B
 			}
 		} else {
 			return "", nil, false, "", nil, nil, fmt.Errorf("invalid build arg %q", ba)
+		}
+	}
+
+	// Propagate SOURCE_DATE_EPOCH from the client env
+	// https://github.com/docker/buildx/pull/1482
+	if v := os.Getenv("SOURCE_DATE_EPOCH"); v != "" {
+		if _, ok := seenBuildArgs["SOURCE_DATE_EPOCH"]; !ok {
+			buildctlArgs = append(buildctlArgs, "--opt=build-arg:SOURCE_DATE_EPOCH="+v)
 		}
 	}
 

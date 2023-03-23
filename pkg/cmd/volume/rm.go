@@ -20,23 +20,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 
 	"github.com/containerd/containerd"
 	"github.com/containerd/nerdctl/pkg/api/types"
-	"github.com/containerd/nerdctl/pkg/clientutil"
 	"github.com/containerd/nerdctl/pkg/inspecttypes/dockercompat"
 	"github.com/containerd/nerdctl/pkg/labels"
 	"github.com/containerd/nerdctl/pkg/mountutil"
 )
 
-func Rm(ctx context.Context, options *types.VolumeRmCommandOptions, stdout io.Writer) error {
-	client, ctx, cancel, err := clientutil.NewClient(ctx, options.GOptions.Namespace, options.GOptions.Address)
-	if err != nil {
-		return err
-	}
-	defer cancel()
-
+func Remove(ctx context.Context, client *containerd.Client, volumes []string, options types.VolumeRemoveOptions) error {
 	containers, err := client.Containers(ctx)
 	if err != nil {
 		return err
@@ -51,7 +43,7 @@ func Rm(ctx context.Context, options *types.VolumeRmCommandOptions, stdout io.Wr
 	}
 
 	var volumenames []string // nolint: prealloc
-	for _, name := range options.Volumes {
+	for _, name := range volumes {
 		volume, err := volStore.Get(name, false)
 		if err != nil {
 			return err
@@ -66,7 +58,7 @@ func Rm(ctx context.Context, options *types.VolumeRmCommandOptions, stdout io.Wr
 		return err
 	}
 	for _, name := range removedNames {
-		fmt.Fprintln(stdout, name)
+		fmt.Fprintln(options.Stdout, name)
 	}
 	return err
 }

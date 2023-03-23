@@ -27,6 +27,7 @@ import (
 
 	"github.com/containerd/nerdctl/pkg/config"
 	ncdefaults "github.com/containerd/nerdctl/pkg/defaults"
+	"github.com/containerd/nerdctl/pkg/errutil"
 	"github.com/containerd/nerdctl/pkg/logging"
 	"github.com/containerd/nerdctl/pkg/rootlessutil"
 	"github.com/containerd/nerdctl/pkg/version"
@@ -68,6 +69,9 @@ func usage(c *cobra.Command) error {
 	var managementCommands, nonManagementCommands []*cobra.Command
 	for _, f := range c.Commands() {
 		f := f
+		if f.Hidden {
+			continue
+		}
 		if f.Annotations[Category] == Management {
 			managementCommands = append(managementCommands, f)
 		} else {
@@ -113,7 +117,7 @@ func usage(c *cobra.Command) error {
 
 func main() {
 	if err := xmain(); err != nil {
-		HandleExitCoder(err)
+		errutil.HandleExitCoder(err)
 		logrus.Fatal(err)
 	}
 }
@@ -170,6 +174,7 @@ func initRootCmdFlags(rootCmd *cobra.Command, tomlPath string) (*pflag.FlagSet, 
 	rootCmd.PersistentFlags().StringSlice("hosts-dir", cfg.HostsDir, "A directory that contains <HOST:PORT>/hosts.toml (containerd style) or <HOST:PORT>/{ca.cert, cert.pem, key.pem} (docker style)")
 	// Experimental enable experimental feature, see in https://github.com/containerd/nerdctl/blob/main/docs/experimental.md
 	AddPersistentBoolFlag(rootCmd, "experimental", nil, nil, cfg.Experimental, "NERDCTL_EXPERIMENTAL", "Control experimental: https://github.com/containerd/nerdctl/blob/main/docs/experimental.md")
+	AddPersistentStringFlag(rootCmd, "host-gateway-ip", nil, nil, nil, aliasToBeInherited, cfg.HostGatewayIP, "NERDCTL_HOST_GATEWAY_IP", "IP address that the special 'host-gateway' string in --add-host resolves to. Defaults to the IP address of the host. It has no effect without setting --add-host")
 	return aliasToBeInherited, nil
 }
 
@@ -227,7 +232,7 @@ Config file ($NERDCTL_TOML): %s
 		}
 		if appNeedsRootlessParentMain(cmd, args) {
 			// reexec /proc/self/exe with `nsenter` into RootlessKit namespaces
-			return rootlessutil.ParentMain()
+			return rootlessutil.ParentMain(globalOptions.HostGatewayIP)
 		}
 		return nil
 	}
@@ -339,30 +344,6 @@ func globalFlags(cmd *cobra.Command) (string, []string) {
 		}
 	})
 	return args0, args
-}
-
-type ExitCoder interface {
-	error
-	ExitCode() int
-}
-
-type ExitCodeError struct {
-	error
-	exitCode int
-}
-
-func (e ExitCodeError) ExitCode() int {
-	return e.exitCode
-}
-
-func HandleExitCoder(err error) {
-	if err == nil {
-		return
-	}
-
-	if exitErr, ok := err.(ExitCoder); ok {
-		os.Exit(exitErr.ExitCode())
-	}
 }
 
 // unknownSubcommandAction is needed to let `nerdctl system non-existent-command` fail

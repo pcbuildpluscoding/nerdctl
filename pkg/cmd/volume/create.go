@@ -18,25 +18,24 @@ package volume
 
 import (
 	"fmt"
-	"io"
 
 	"github.com/containerd/containerd/identifiers"
 	"github.com/containerd/nerdctl/pkg/api/types"
 	"github.com/containerd/nerdctl/pkg/strutil"
 )
 
-func Create(options *types.VolumeCreateCommandOptions, stdout io.Writer) error {
-	if err := identifiers.Validate(options.Name); err != nil {
-		return fmt.Errorf("malformed name %s: %w", options.Name, err)
+func Create(name string, options types.VolumeCreateOptions) error {
+	if err := identifiers.Validate(name); err != nil {
+		return fmt.Errorf("malformed name %s: %w", name, err)
 	}
 	volStore, err := Store(options.GOptions.Namespace, options.GOptions.DataRoot, options.GOptions.Address)
 	if err != nil {
 		return err
 	}
 	labels := strutil.DedupeStrSlice(options.Labels)
-	if _, err := volStore.Create(options.Name, labels); err != nil {
+	if _, err := volStore.Create(name, labels); err != nil {
 		return err
 	}
-	fmt.Fprintf(stdout, "%s\n", options.Name)
+	fmt.Fprintf(options.Stdout, "%s\n", name)
 	return nil
 }

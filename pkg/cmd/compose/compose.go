@@ -31,11 +31,12 @@ import (
 	"github.com/containerd/nerdctl/pkg/cmd/volume"
 	"github.com/containerd/nerdctl/pkg/composer"
 	"github.com/containerd/nerdctl/pkg/composer/serviceparser"
-	"github.com/containerd/nerdctl/pkg/cosignutil"
 	"github.com/containerd/nerdctl/pkg/imgutil"
 	"github.com/containerd/nerdctl/pkg/ipfs"
 	"github.com/containerd/nerdctl/pkg/netutil"
 	"github.com/containerd/nerdctl/pkg/referenceutil"
+	"github.com/containerd/nerdctl/pkg/signutil"
+	"github.com/containerd/nerdctl/pkg/strutil"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/sirupsen/logrus"
 )
@@ -52,6 +53,19 @@ func New(client *containerd.Client, globalOptions types.GlobalCommandOptions, op
 	options.NetworkExists = func(netName string) (bool, error) {
 		for _, f := range networkConfigs {
 			if f.Name == netName {
+				return true, nil
+			}
+		}
+		return false, nil
+	}
+
+	options.NetworkInUse = func(ctx context.Context, netName string) (bool, error) {
+		networkUsedByNsMap, err := netutil.UsedNetworks(ctx, client)
+		if err != nil {
+			return false, err
+		}
+		for _, v := range networkUsedByNsMap {
+			if strutil.InStringSlice(v, netName) {
 				return true, nil
 			}
 		}
@@ -99,7 +113,7 @@ func New(client *containerd.Client, globalOptions types.GlobalCommandOptions, op
 
 		// IPFS reference
 		if scheme, ref, err := referenceutil.ParseIPFSRefWithScheme(imageName); err == nil {
-			var ipfsPath *string
+			var ipfsPath string
 			if ipfsAddress := options.IPFSAddress; ipfsAddress != "" {
 				dir, err := os.MkdirTemp("", "apidirtmp")
 				if err != nil {
@@ -109,7 +123,7 @@ func New(client *containerd.Client, globalOptions types.GlobalCommandOptions, op
 				if err := os.WriteFile(filepath.Join(dir, "api"), []byte(ipfsAddress), 0600); err != nil {
 					return err
 				}
-				ipfsPath = &dir
+				ipfsPath = dir
 			}
 			_, err = ipfs.EnsureImage(ctx, client, stdout, stderr, globalOptions.Snapshotter, scheme, ref,
 				pullMode, ocispecPlatforms, nil, quiet, ipfsPath)
@@ -129,7 +143,7 @@ func New(client *containerd.Client, globalOptions types.GlobalCommandOptions, op
 				if keyVal, ok := ps.Unparsed.Extensions[serviceparser.ComposeCosignPublicKey]; ok {
 					keyRef = keyVal.(string)
 				}
-				ref, err = cosignutil.VerifyCosign(ctx, ref, keyRef, globalOptions.HostsDir)
+				ref, err = signutil.VerifyCosign(ctx, ref, keyRef, globalOptions.HostsDir)
 				if err != nil {
 					return err
 				}

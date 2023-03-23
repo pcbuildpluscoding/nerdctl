@@ -18,21 +18,16 @@ package types
 
 import "io"
 
-type ApparmorInspectCommandOptions struct {
-	// Writer is the output writer
-	Writer io.Writer
-}
-
-type ApparmorUnloadCommandOptions struct {
-	// Target is the profile name
-	Target string
-}
-
-type ApparmorListCommandOptions struct {
+// ApparmorListOptions specifies options for `nerdctl apparmor ls`.
+type ApparmorListOptions struct {
+	Stdout io.Writer
 	// Only display profile names
 	Quiet bool
 	// Format the output using the given go template
 	Format string
-	// Writer is the output writer
-	Writer io.Writer
+}
+
+// ApparmorInspectOptions specifies options for `nerdctl apparmor inspect`
+type ApparmorInspectOptions struct {
+	Stdout io.Writer
 }

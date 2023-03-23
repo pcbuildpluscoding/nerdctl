@@ -16,25 +16,29 @@
 
 package types
 
-type VolumeCreateCommandOptions struct {
+import "io"
+
+// VolumeCreateOptions specifies options for `nerdctl volume create`.
+type VolumeCreateOptions struct {
+	Stdout   io.Writer
 	GOptions GlobalCommandOptions
-	// Name is the volume name
-	Name string
 	// Labels are the volume labels
 	Labels []string
 }
 
-type VolumeInspectCommandOptions struct {
+// VolumeInspectOptions specifies options for `nerdctl volume inspect`.
+type VolumeInspectOptions struct {
+	Stdout   io.Writer
 	GOptions GlobalCommandOptions
 	// Format the output using the given go template
 	Format string
 	// Display the disk usage of volumes. Can be slow with volumes having loads of directories.
 	Size bool
-	// Volumes are the volumes to be inspected
-	Volumes []string
 }
 
-type VolumeListCommandOptions struct {
+// VolumeListOptions specifies options for `nerdctl volume ls`.
+type VolumeListOptions struct {
+	Stdout   io.Writer
 	GOptions GlobalCommandOptions
 	// Only display volume names
 	Quiet bool
@@ -46,14 +50,18 @@ type VolumeListCommandOptions struct {
 	Filters []string
 }
 
-type VolumePruneCommandOptions struct {
+// VolumePruneOptions specifies options for `nerdctl volume prune`.
+type VolumePruneOptions struct {
+	Stdout   io.Writer
 	GOptions GlobalCommandOptions
 	// Do not prompt for confirmation
 	Force bool
 }
 
-type VolumeRmCommandOptions struct {
+// VolumeRemoveOptions specifies options for `nerdctl volume rm`.
+type VolumeRemoveOptions struct {
+	Stdout   io.Writer
 	GOptions GlobalCommandOptions
-	// Volumes are the volumes to be removed
-	Volumes []string
+	// Force the removal of one or more volumes
+	Force bool
 }

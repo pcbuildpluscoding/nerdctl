@@ -26,7 +26,6 @@ import (
 
 	"github.com/containerd/containerd"
 	"github.com/containerd/containerd/content"
-	"github.com/containerd/containerd/images"
 	"github.com/containerd/nerdctl/pkg/buildkitutil"
 	"github.com/containerd/nerdctl/pkg/testutil"
 	"github.com/containerd/nerdctl/pkg/testutil/testregistry"
@@ -69,7 +68,11 @@ func newJWEKeyPair(t testing.TB) *jweKeyPair {
 func rmiAll(base *testutil.Base) {
 	base.T.Logf("Pruning images")
 	imageIDs := base.Cmd("images", "--no-trunc", "-a", "-q").OutLines()
-	base.Cmd(append([]string{"rmi", "-f"}, imageIDs...)...).AssertOK()
+	// remove empty output line at the end
+	imageIDs = imageIDs[:len(imageIDs)-1]
+	// use `Run` on purpose (same below) because `rmi all` may fail on individual
+	// image id that has an expected running container (e.g. a registry)
+	base.Cmd(append([]string{"rmi", "-f"}, imageIDs...)...).Run()
 
 	base.T.Logf("Pruning build caches")
 	if _, err := buildkitutil.GetBuildkitHost(testutil.Namespace); err == nil {
@@ -97,15 +100,9 @@ func rmiAll(base *testutil.Base) {
 		}
 
 		base.T.Logf("Pruning all images (again?)")
-		is := client.ImageService()
-		imgs, err := is.List(ctx)
-		assert.NilError(base.T, err)
-		for _, img := range imgs {
-			base.T.Logf("Pruning image %+v", img)
-			if err := is.Delete(ctx, img.Name, images.SynchronousDelete()); err != nil {
-				base.T.Log(err)
-			}
-		}
+		imageIDs = base.Cmd("images", "--no-trunc", "-a", "-q").OutLines()
+		base.T.Logf("pruning following images: %+v", imageIDs)
+		base.Cmd(append([]string{"rmi", "-f"}, imageIDs...)...).Run()
 	}
 }
 

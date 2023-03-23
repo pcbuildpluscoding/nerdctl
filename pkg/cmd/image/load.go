@@ -29,7 +29,7 @@ import (
 	"github.com/containerd/containerd/images/archive"
 	"github.com/containerd/containerd/platforms"
 	"github.com/containerd/nerdctl/pkg/api/types"
-	"github.com/containerd/nerdctl/pkg/clientutil"
+	"github.com/containerd/nerdctl/pkg/imgutil"
 	"github.com/containerd/nerdctl/pkg/platformutil"
 )
 
@@ -46,14 +46,14 @@ func (r *readCounter) Read(p []byte) (int, error) {
 	return n, err
 }
 
-func Load(ctx context.Context, stdin io.Reader, stdout io.Writer, options types.LoadCommandOptions) error {
+func Load(ctx context.Context, client *containerd.Client, options types.ImageLoadOptions) error {
 	if options.Input != "" {
 		f, err := os.Open(options.Input)
 		if err != nil {
 			return err
 		}
 		defer f.Close()
-		stdin = f
+		options.Stdin = f
 	} else {
 		// check if stdin is empty.
 		stdinStat, err := os.Stdin.Stat()
@@ -64,7 +64,7 @@ func Load(ctx context.Context, stdin io.Reader, stdout io.Writer, options types.
 			return errors.New("stdin is empty and input flag is not specified")
 		}
 	}
-	decompressor, err := compression.DecompressStream(stdin)
+	decompressor, err := compression.DecompressStream(options.Stdin)
 	if err != nil {
 		return err
 	}
@@ -72,19 +72,12 @@ func Load(ctx context.Context, stdin io.Reader, stdout io.Writer, options types.
 	if err != nil {
 		return err
 	}
-	return loadImage(ctx, decompressor, stdout, options, platMC, false)
+	return loadImage(ctx, client, decompressor, platMC, false, options)
 }
 
-func loadImage(ctx context.Context, in io.Reader, stdout io.Writer, options types.LoadCommandOptions, platMC platforms.MatchComparer, quiet bool) error {
+func loadImage(ctx context.Context, client *containerd.Client, in io.Reader, platMC platforms.MatchComparer, quiet bool, options types.ImageLoadOptions) error {
 	// In addition to passing WithImagePlatform() to client.Import(), we also need to pass WithDefaultPlatform() to NewClient().
 	// Otherwise unpacking may fail.
-
-	client, ctx, cancel, err := clientutil.NewClient(ctx, options.GOptions.Namespace, options.GOptions.Address, containerd.WithDefaultPlatform(platMC))
-	if err != nil {
-		return err
-	}
-	defer cancel()
-
 	r := &readCounter{Reader: in}
 	imgs, err := client.Import(ctx, r, containerd.WithDigestRef(archive.DigestTranslator(options.GOptions.Snapshotter)), containerd.WithSkipDigestRef(func(name string) bool { return name != "" }), containerd.WithImportPlatform(platMC))
 	if err != nil {
@@ -102,16 +95,17 @@ func loadImage(ctx context.Context, in io.Reader, stdout io.Writer, options type
 
 		// TODO: Show unpack status
 		if !quiet {
-			fmt.Fprintf(stdout, "unpacking %s (%s)...\n", img.Name, img.Target.Digest)
+			fmt.Fprintf(options.Stdout, "unpacking %s (%s)...\n", img.Name, img.Target.Digest)
 		}
 		err = image.Unpack(ctx, options.GOptions.Snapshotter)
 		if err != nil {
 			return err
 		}
 		if quiet {
-			fmt.Fprintln(stdout, img.Target.Digest)
+			fmt.Fprintln(options.Stdout, img.Target.Digest)
 		} else {
-			fmt.Fprintf(stdout, "Loaded image: %s\n", img.Name)
+			repo, tag := imgutil.ParseRepoTag(img.Name)
+			fmt.Fprintf(options.Stdout, "Loaded image: %s:%s\n", repo, tag)
 		}
 	}
 
